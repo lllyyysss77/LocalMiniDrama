@@ -166,6 +166,35 @@
             />
           </el-select>
         </el-form-item>
+        <!-- 接口规范：仅图片/分镜/视频类型显示，预设厂商自动填充；自定义厂商必选 -->
+        <el-form-item v-if="form.service_type !== 'text'">
+          <template #label>
+            <span class="form-label-tip">接口规范
+              <el-tooltip placement="top" popper-class="cfg-tip-popper">
+                <template #content>
+                  <div class="cfg-tip-content">
+                    告诉系统该厂商使用哪种接口格式。<br>
+                    <b>预设厂商</b>选择后自动填充，无需手动设置。<br>
+                    <b>自定义/中转站</b>时请明确选择，避免走错接口。<br>
+                    · <b>OpenAI 兼容</b>：绝大多数中转站、代理服务<br>
+                    · <b>火山引擎</b>：豆包即梦系列（Seedream/Seedance）<br>
+                    · <b>通义万象</b>：阿里云 DashScope multimodal<br>
+                    · <b>Google Gemini</b>：Gemini 图片 / Veo 视频<br>
+                    · <b>NanoBanana</b>：NanoBanana 专用接口
+                  </div>
+                </template>
+                <el-icon class="tip-icon"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </span>
+          </template>
+          <el-select v-model="form.api_protocol" style="width: 100%" placeholder="选择接口规范（自定义厂商必选）" clearable>
+            <el-option label="OpenAI 兼容（大多数中转站默认）" value="openai" />
+            <el-option label="火山引擎（豆包 Seedream / Seedance）" value="volcengine" />
+            <el-option label="通义万象 DashScope" value="dashscope" />
+            <el-option label="Google Gemini（图片 / Veo 视频）" value="gemini" />
+            <el-option label="NanoBanana" value="nano_banana" />
+          </el-select>
+        </el-form-item>
         <el-form-item prop="name">
           <template #label>
             <span class="form-label-tip">名称
@@ -474,6 +503,7 @@ const form = ref({
   service_type: 'text',
   name: '',
   provider: '',
+  api_protocol: '',
   base_url: '',
   api_key: '',
   endpoint: '',
@@ -556,7 +586,7 @@ const providerConfigs = {
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
-    { id: 'gemini', name: 'Google Gemini', models: ['gemini-3-pro-image-preview'] },
+    { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] },
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'qwen_image', name: '通义千问', models: ['qwen-image-max', 'qwen-image-plus', 'qwen-image'] }
@@ -566,15 +596,36 @@ const providerConfigs = {
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
+    { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] }
   ],
   video: [
     { id: 'volces', name: '火山引擎', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
     { id: 'chatfire', name: 'Chatfire', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'sora-2', 'sora-2-pro'] },
     { id: 'minimax', name: 'MiniMax 海螺', models: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02'] },
+    { id: 'gemini', name: 'Google Gemini (Veo)', models: ['veo-3.1-generate-preview', 'veo-3.0-generate-preview', 'veo-3.0-fast-generate-preview'] },
     { id: 'dashscope', name: '通义万相', models: ['wan2.6-r2v-flash', 'wan2.6-t2v', 'wan2.2-kf2v-flash', 'wan2.6-i2v-flash', 'wanx2.1-vace-plus'] },
     { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] }
   ]
+}
+
+/** 厂商 id → 默认接口规范（api_protocol） */
+const providerProtocolMap = {
+  // image / storyboard_image
+  volcengine: 'volcengine',
+  volces: 'volcengine',
+  volc: 'volcengine',
+  nano_banana: 'nano_banana',
+  dashscope: 'dashscope',
+  qwen_image: 'dashscope',
+  gemini: 'gemini',
+  google: 'gemini',
+  // video
+  minimax: 'openai',
+  openai: 'openai',
+  chatfire: 'openai',
+  qwen: 'openai',
+  deepseek: 'openai',
 }
 
 /** 厂商 id → 默认 Base URL（与参考前端 AIConfigDialog 757-775 一致） */
@@ -620,6 +671,7 @@ const availableModels = computed(() => {
 function onProviderChange(providerId) {
   if (providerId === CUSTOM_PROVIDER_SENTINEL) {
     form.value.provider = ''
+    form.value.api_protocol = ''
     form.value.base_url = ''
     form.value.modelText = ''
     form.value.default_model = ''
@@ -636,6 +688,8 @@ function onProviderChange(providerId) {
   form.value.base_url = getBaseUrlForProvider(providerId)
   form.value.modelText = (p.models || []).join('\n')
   form.value.default_model = (p.models && p.models[0]) || ''
+  // 自动填充接口规范
+  form.value.api_protocol = providerProtocolMap[providerId] || (st === 'text' ? '' : 'openai')
   if (!editingId.value) {
     form.value.name = (p.name || providerId) + ' ' + serviceTypeLabel(st)
   }
@@ -689,6 +743,7 @@ function resetForm() {
     service_type: 'text',
     name: '',
     provider: '',
+    api_protocol: '',
     base_url: '',
     api_key: '',
     endpoint: '',
@@ -715,6 +770,7 @@ function openEdit(row) {
     service_type: row.service_type,
     name: row.name,
     provider: row.provider,
+    api_protocol: row.api_protocol || '',
     base_url: row.base_url,
     api_key: row.api_key,
     endpoint: row.endpoint || '',
@@ -739,6 +795,7 @@ async function submit() {
       service_type: form.value.service_type,
       name: form.value.name,
       provider: form.value.provider,
+      api_protocol: form.value.api_protocol || '',
       base_url: form.value.base_url,
       api_key: form.value.api_key,
       endpoint: form.value.endpoint || null,

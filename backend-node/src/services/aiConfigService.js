@@ -97,11 +97,12 @@ function createConfig(db, log, req) {
   }
   const defaultModel = req.default_model != null ? String(req.default_model).trim() || null : null;
   const info = db.prepare(
-    `INSERT INTO ai_service_configs (service_type, provider, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+    `INSERT INTO ai_service_configs (service_type, provider, api_protocol, name, base_url, api_key, model, default_model, endpoint, query_endpoint, priority, is_default, is_active, settings, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
   ).run(
     req.service_type || 'text',
     req.provider || '',
+    req.api_protocol || '',
     req.name || '',
     req.base_url || '',
     req.api_key || '',
@@ -133,6 +134,10 @@ function updateConfig(db, log, id, req) {
   if (req.provider != null) {
     updates.push('provider = ?');
     params.push(req.provider);
+  }
+  if (req.api_protocol != null) {
+    updates.push('api_protocol = ?');
+    params.push(req.api_protocol);
   }
   if (req.base_url != null) {
     updates.push('base_url = ?');
@@ -195,6 +200,7 @@ function rowToConfig(r) {
     id: r.id,
     service_type: r.service_type,
     provider: r.provider,
+    api_protocol: r.api_protocol || '',
     name: r.name,
     base_url: r.base_url,
     api_key: r.api_key,

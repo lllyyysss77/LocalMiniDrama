@@ -48,6 +48,31 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
   }
   const model = getModelFromConfig(config, preferredModel);
   const url = buildChatUrl(config);
+
+  // 解析 settings 里的 max_tokens 上限（用户在 AI 配置里可设置 {"max_tokens": 8192}）
+  let settingsMaxTokens = null;
+  try {
+    if (config.settings) {
+      const s = typeof config.settings === 'string' ? JSON.parse(config.settings) : config.settings;
+      if (s && typeof s.max_tokens === 'number' && s.max_tokens > 0) settingsMaxTokens = s.max_tokens;
+    }
+  } catch (_) {}
+
+  // 最终 max_tokens：优先取调用方传入值，但不超过 settings 里的上限；
+  // 若调用方未传，则使用 settings 值（有的话）；两者都没有则不传（让模型用自己默认值）。
+  let finalMaxTokens = null;
+  if (options.max_tokens != null) {
+    finalMaxTokens = Number(options.max_tokens);
+    if (settingsMaxTokens != null && finalMaxTokens > settingsMaxTokens) {
+      log.warn('AI generateText: max_tokens 超过配置上限，已截断', {
+        requested: finalMaxTokens, capped_to: settingsMaxTokens, model,
+      });
+      finalMaxTokens = settingsMaxTokens;
+    }
+  } else if (settingsMaxTokens != null) {
+    finalMaxTokens = settingsMaxTokens;
+  }
+
   const body = {
     model,
     messages: [
@@ -55,9 +80,9 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
       { role: 'user', content: userPrompt },
     ],
     temperature: Number(temperature),
-    ...(options.max_tokens != null ? { max_tokens: Number(options.max_tokens) } : {}),
+    ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
   };
-  log.info('AI generateText request', { url: url.slice(0, 60), model });
+  log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)' });
   const res = await fetch(url, {
     method: 'POST',
     headers: {

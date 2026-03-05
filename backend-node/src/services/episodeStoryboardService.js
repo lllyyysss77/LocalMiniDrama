@@ -276,10 +276,11 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     // 添加系统提示词：明确要求数量和时长
     const constraintPrompt = `\nIMPORTANT: Please strictly follow the user's constraints on "Total shot count" and "Total video duration". Consolidate or split shots as needed to meet these targets within ±20% margin.`;
     
+    // max_tokens 不在此硬编码，由 AI 配置的 settings.max_tokens 控制（用户可按模型上限自行设置）。
+    // 若用户未配置则不传，让模型使用自身默认值，避免超出不同模型的上限导致 400 错误。
     const text = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt + constraintPrompt, {
       model: model || undefined,
       temperature: 0.7,
-      max_tokens: 32768,
     });
 
     taskService.updateTaskStatus(db, taskId, 'processing', 50, '分镜头生成完成，正在解析结果...');

@@ -377,6 +377,21 @@ function ensureAllColumns(database) {
     { name: 'updated_at',  type: 'TEXT' },
     { name: 'deleted_at',  type: 'TEXT' },
   ]);
+
+  // --- image_proxy_cache ---
+  try {
+    database.exec(`CREATE TABLE IF NOT EXISTS image_proxy_cache (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      cache_key  TEXT NOT NULL UNIQUE,
+      proxy_url  TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`);
+  } catch (_) {}
+  ensureColumns(database, 'image_proxy_cache', [
+    { name: 'cache_key',  type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'proxy_url',  type: 'TEXT NOT NULL DEFAULT \'\'' },
+    { name: 'created_at', type: 'TEXT NOT NULL DEFAULT \'\'' },
+  ]);
 }
 
 /** 对已打开的 database 执行迁移与兜底补列（供 app 启动时调用） */

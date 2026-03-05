@@ -124,6 +124,7 @@
           <el-select v-model="newForm.aspect_ratio" style="width: 100%">
             <el-option label="16:9 横屏（默认）" value="16:9" />
             <el-option label="9:16 竖屏（短视频）" value="9:16" />
+            <el-option label="3:4 竖版" value="3:4" />
             <el-option label="1:1 方形" value="1:1" />
             <el-option label="4:3 传统横屏" value="4:3" />
             <el-option label="21:9 宽银幕" value="21:9" />
@@ -643,19 +644,43 @@ function formatStatus(status) {
 
 function formatStyle(style) {
   const map = {
+    // 写实 / 影视
     realistic: '写实',
     cinematic: '电影感',
+    documentary: '纪录片',
+    noir: '黑色电影',
+    'retro film': '复古胶片',
+    horror: '恐怖',
+    // 动漫 / 卡通
     'anime style': '日本动漫',
-    cyberpunk: '赛博朋克',
+    anime: '日本动漫',
+    'comic style': '欧美漫画',
+    cartoon: '卡通',
+    // 中国风格
+    'ink wash': '国画水墨',
+    'chinese style': '中国风',
+    historical: '古装',
+    wuxia: '武侠',
+    // 绘画艺术
     watercolor: '水彩',
     'oil painting': '油画',
+    sketch: '素描',
+    'woodblock print': '版画',
+    impressionist: '印象派',
+    // 幻想 / 科幻
+    fantasy: '奇幻',
+    'dark fantasy': '暗黑奇幻',
+    'sci-fi': '科幻',
+    sci_fi: '科幻',
+    cyberpunk: '赛博朋克',
+    steampunk: '蒸汽朋克',
+    'post-apocalyptic': '末世废土',
+    // 数字 / 现代
     '3d render': '3D渲染',
     'pixel art': '像素风',
-    anime: '动漫',
-    cartoon: '卡通',
-    fantasy: '奇幻',
-    sci_fi: '科幻',
-    historical: '古装',
+    'low poly': '低多边形',
+    minimalist: '极简',
+    dreamy: '唯美梦幻',
   }
   return map[style] || style
 }

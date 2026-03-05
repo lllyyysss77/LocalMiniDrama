@@ -165,6 +165,7 @@
           <el-select v-model="projectAspectRatio" style="width: 130px" @change="saveProjectSettings">
             <el-option label="16:9 横屏" value="16:9" />
             <el-option label="9:16 竖屏" value="9:16" />
+            <el-option label="3:4 竖版" value="3:4" />
             <el-option label="1:1 方形" value="1:1" />
             <el-option label="4:3" value="4:3" />
             <el-option label="21:9 宽银幕" value="21:9" />
@@ -176,7 +177,9 @@
             <el-option label="10秒/段" :value="10" />
           </el-select>
           <el-select v-model="generationStyle" placeholder="图片/视频风格" clearable style="width: 160px" @change="saveProjectSettings">
-            <el-option v-for="opt in generationStyleOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+            <el-option-group v-for="group in generationStyleOptions" :key="group.label" :label="group.label">
+              <el-option v-for="opt in group.options" :key="opt.value" :label="opt.label" :value="opt.value" />
+            </el-option-group>
           </el-select>
           <el-button
             type="primary"
@@ -400,7 +403,7 @@
         <div class="sb-config-row">
           <label class="sb-config-item">
             <span class="sb-config-label">分镜数量</span>
-            <el-input-number v-model="storyboardCount" :min="1" :max="50" :step="5" placeholder="自动" class="sb-config-input" />
+            <el-input-number v-model="storyboardCount" :min="1" :max="200" :step="5" placeholder="自动" class="sb-config-input" />
             <span class="sb-config-hint">留空由 AI 决定</span>
           </label>
           <span class="sb-config-divider">｜</span>
@@ -1149,14 +1152,65 @@ const generationStyle = ref('')
 const projectAspectRatio = ref('16:9')
 const videoClipDuration = ref(5)
 const generationStyleOptions = [
-  { label: '日本动漫', value: 'anime style' },
-  { label: '写实', value: 'realistic' },
-  { label: '电影感', value: 'cinematic' },
-  { label: '赛博朋克', value: 'cyberpunk' },
-  { label: '水彩', value: 'watercolor' },
-  { label: '油画', value: 'oil painting' },
-  { label: '3D 渲染', value: '3d render' },
-  { label: '像素风', value: 'pixel art' }
+  {
+    label: '写实 / 影视',
+    options: [
+      { label: '写实', value: 'realistic' },
+      { label: '电影感', value: 'cinematic' },
+      { label: '纪录片', value: 'documentary' },
+      { label: '黑色电影', value: 'noir' },
+      { label: '复古胶片', value: 'retro film' },
+      { label: '恐怖', value: 'horror' },
+    ]
+  },
+  {
+    label: '动漫 / 卡通',
+    options: [
+      { label: '日本动漫', value: 'anime style' },
+      { label: '欧美漫画', value: 'comic style' },
+      { label: '卡通', value: 'cartoon' },
+    ]
+  },
+  {
+    label: '中国风格',
+    options: [
+      { label: '国画水墨', value: 'ink wash' },
+      { label: '中国风', value: 'chinese style' },
+      { label: '古装', value: 'historical' },
+      { label: '武侠', value: 'wuxia' },
+    ]
+  },
+  {
+    label: '绘画艺术',
+    options: [
+      { label: '水彩', value: 'watercolor' },
+      { label: '油画', value: 'oil painting' },
+      { label: '素描', value: 'sketch' },
+      { label: '版画', value: 'woodblock print' },
+      { label: '印象派', value: 'impressionist' },
+    ]
+  },
+  {
+    label: '幻想 / 科幻',
+    options: [
+      { label: '奇幻', value: 'fantasy' },
+      { label: '暗黑奇幻', value: 'dark fantasy' },
+      { label: '科幻', value: 'sci-fi' },
+      { label: '赛博朋克', value: 'cyberpunk' },
+      { label: '蒸汽朋克', value: 'steampunk' },
+      { label: '末世废土', value: 'post-apocalyptic' },
+    ]
+  },
+  {
+    label: '数字 / 现代',
+    options: [
+      { label: '3D 渲染', value: '3d render' },
+      { label: '像素风', value: 'pixel art' },
+      { label: '低多边形', value: 'low poly' },
+      { label: '极简', value: 'minimalist' },
+      { label: '唯美梦幻', value: 'dreamy' },
+    ]
+  },
 ]
 const scriptContent = computed({
   get: () => store.scriptContent,
@@ -2768,11 +2822,16 @@ async function onGenerateStoryboard() {
       aspect_ratio: projectAspectRatio.value
     })
     const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
-    if (taskId) await pollTask(taskId, () => loadDrama())
+    if (taskId) {
+      const pollRes = await pollTask(taskId, () => loadDrama())
+      // failed / timeout：pollTask 内已展示对应提示，直接返回，不显示「完成」
+      if (pollRes?.status !== 'completed') return
+    }
     await loadDrama()
     ElMessage.success('分镜生成完成')
   } catch (e) {
-    ElMessage.error(e.message || '生成失败')
+    // HTTP 错误由 request 拦截器统一展示，此处仅处理拦截器未覆盖的异常
+    if (!e.response) ElMessage.error(e.message || '生成失败')
   } finally {
     storyboardGenerating.value = false
   }
@@ -2830,7 +2889,7 @@ async function pollUntilResourceHasImage(checker, maxAttempts = 20, intervalMs =
 }
 
 function pollTask(taskId, onDone) {
-  const maxAttempts = 180
+  const maxAttempts = 450  // 450 × 2s = 15 分钟，足够复杂剧本生成
   const interval = 2000
   let attempts = 0
   return new Promise((resolve) => {
@@ -2847,11 +2906,15 @@ function pollTask(taskId, onDone) {
           ElMessage.error(errMsg)
           return resolve({ status: 'failed', error: errMsg })
         }
-      } catch (_) {}
+      } catch (pollErr) {
+        // 轮询网络异常时仅打印，不打断轮询（服务短暂重启等情况）
+        console.warn('[pollTask] poll attempt failed:', pollErr?.message)
+      }
       if (attempts < maxAttempts) setTimeout(tick, interval)
       else {
-        ElMessage.warning('任务查询超时，请刷新页面查看最新状态')
-        resolve({ status: 'timeout' })
+        const timeoutMsg = '分镜生成任务已超时（超过15分钟），请刷新页面查看是否已完成'
+        ElMessage.warning(timeoutMsg)
+        resolve({ status: 'timeout', error: timeoutMsg })
       }
     }
     setTimeout(tick, interval)
@@ -2860,7 +2923,7 @@ function pollTask(taskId, onDone) {
 
 /** 一键生成视频：暂停时等待，返回 { paused: true } 表示被暂停中断 */
 function pollTaskWithPause(taskId, onDone) {
-  const maxAttempts = 180
+  const maxAttempts = 450  // 450 × 2s = 15 分钟
   const interval = 2000
   let attempts = 0
   return new Promise((resolve) => {
@@ -2881,10 +2944,12 @@ function pollTaskWithPause(taskId, onDone) {
           resolve({ error: t.error || '任务失败' })
           return
         }
-      } catch (_) {}
+      } catch (pollErr) {
+        console.warn('[pollTaskWithPause] poll attempt failed:', pollErr?.message)
+      }
       if (attempts < maxAttempts) setTimeout(tick, interval)
       else {
-        resolve({ error: '任务查询超时' })
+        resolve({ error: '任务查询超时（超过15分钟）' })
       }
     }
     setTimeout(tick, interval)

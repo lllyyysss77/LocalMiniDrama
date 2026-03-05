@@ -1,9 +1,24 @@
 // 与 Go pkg/image + ImageGenerationService 对齐：调用图片生成 API，更新 image_generations 与角色头像
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const aiConfigService = require('./aiConfigService');
 const uploadService = require('./uploadService');
 const taskService = require('./taskService');
+
+/**
+ * 根据 provider 名推断接口规范（api_protocol 未设置时的兜底逻辑）
+ * 已明确设置 api_protocol 的配置不会走此函数。
+ */
+function inferProtocol(provider, model) {
+  const p = String(provider || '').toLowerCase();
+  if (p === 'dashscope' || p === 'qwen_image') return 'dashscope';
+  if (p === 'nano_banana') return 'nano_banana';
+  if (p === 'gemini' || p === 'google') return 'gemini';
+  if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
+  if (/seedream|doubao/i.test(model || '')) return 'volcengine';
+  return 'openai';
+}
 
 /**
  * 获取默认图片配置：优先使用前端勾选的「默认」配置（is_default），同类型内按优先级（priority）排序；
@@ -97,6 +112,27 @@ function parseDashScopeImageUrl(data) {
     }
   }
   return null;
+}
+
+// Gemini 图片生成支持的比例：1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 3:2 / 2:3 / 5:4 / 4:5 / 21:9
+function geminiAspectRatio(size) {
+  if (!size || typeof size !== 'string') return '16:9';
+  const s = String(size).trim().toLowerCase().replace(/\s/g, '');
+  const ratioSet = new Set(['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9']);
+  if (ratioSet.has(s)) return s;
+  const match = s.match(/^(\d+)[x*](\d+)$/);
+  if (!match) return '1:1';
+  const w = parseInt(match[1], 10);
+  const h = parseInt(match[2], 10);
+  if (!w || !h) return '1:1';
+  const r = w / h;
+  if (r > 2) return '21:9';
+  if (r >= 1.6) return '16:9';
+  if (r >= 1.2) return '4:3';
+  if (r >= 0.9) return '1:1';
+  if (r >= 0.7) return '3:4';
+  if (r >= 0.55) return '4:5';
+  return '9:16';
 }
 
 // nano-banana size 转 aspectRatio（1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 3:2 / 2:3 / 5:4 / 4:5 / 21:9 / auto）
@@ -579,6 +615,257 @@ async function callDashScopeImageApi(config, log, opts) {
 }
 
 /**
+ * 将图片上传到中转图床，返回公开访问 URL。
+ * 接口：POST https://imageproxy.zhongzhuan.chat/api/upload  (multipart/form-data, field: file)
+ * 响应：{ url: "https://imageproxy.zhongzhuan.chat/api/proxy/image/<hash>", created: ... }
+ * 失败自动重试，最多 3 次；成功返回 string URL，全部失败返回 null。
+ */
+async function uploadToImageProxy(imageBuffer, mimeType, log, image_gen_id) {
+  const UPLOAD_URL = 'https://imageproxy.zhongzhuan.chat/api/upload';
+  const extMap = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' };
+  const ext = extMap[mimeType] || 'jpg';
+  const filename = `ref_${Date.now()}.${ext}`;
+
+  const MAX_ATTEMPTS = 3;
+  log.info('[图床上传] ▶ 开始', { image_gen_id, filename, size_kb: Math.round(imageBuffer.length / 1024), url: UPLOAD_URL });
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const tAttempt = Date.now();
+    try {
+      log.info('[图床上传] 发起请求', { image_gen_id, attempt, size_kb: Math.round(imageBuffer.length / 1024) });
+
+      // 手工构造 multipart/form-data（避免引入额外依赖）
+      const boundary = 'imgproxy_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      const headerLine = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${mimeType}\r\n\r\n`;
+      const footerLine = `\r\n--${boundary}--\r\n`;
+      const body = Buffer.concat([
+        Buffer.from(headerLine, 'utf-8'),
+        imageBuffer,
+        Buffer.from(footerLine, 'utf-8'),
+      ]);
+
+      const res = await fetch(UPLOAD_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+        body,
+      });
+
+      const attempt_ms = Date.now() - tAttempt;
+      const raw = await res.text();
+      if (!res.ok) {
+        log.warn('[图床上传] 失败', { image_gen_id, attempt, status: res.status, attempt_ms, body: raw.slice(0, 200) });
+        if (attempt < MAX_ATTEMPTS) { log.info('[图床上传] 准备重试', { image_gen_id, next_attempt: attempt + 1 }); continue; }
+        log.error('[图床上传] ✗ 全部重试失败', { image_gen_id });
+        return null;
+      }
+      const data = JSON.parse(raw);
+      const url = data?.url || null;
+      if (url) {
+        log.info('[图床上传] ✓ 成功', { image_gen_id, attempt, url, attempt_ms });
+        return url;
+      }
+      log.warn('[图床上传] 响应无 url 字段', { image_gen_id, attempt, attempt_ms, raw: raw.slice(0, 200) });
+      if (attempt < MAX_ATTEMPTS) continue;
+      return null;
+    } catch (err) {
+      const attempt_ms = Date.now() - tAttempt;
+      log.warn('[图床上传] 请求异常', { image_gen_id, attempt, attempt_ms, err: err.message });
+      if (attempt < MAX_ATTEMPTS) { log.info('[图床上传] 准备重试', { image_gen_id, next_attempt: attempt + 1 }); continue; }
+      log.error('[图床上传] ✗ 全部重试失败（异常）', { image_gen_id, err: err.message });
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * 从 image_proxy_cache 表查询已缓存的图床 URL。
+ * cache_key 规则：本地相对路径 或 data URL 的 sha256 前 16 字符。
+ */
+function getProxyCache(db, cacheKey) {
+  try {
+    const row = db.prepare('SELECT proxy_url FROM image_proxy_cache WHERE cache_key = ?').get(cacheKey);
+    return row?.proxy_url || null;
+  } catch (_) { return null; }
+}
+
+/** 写入 image_proxy_cache 缓存记录 */
+function setProxyCache(db, cacheKey, proxyUrl) {
+  try {
+    db.prepare(
+      'INSERT OR REPLACE INTO image_proxy_cache (cache_key, proxy_url, created_at) VALUES (?, ?, ?)'
+    ).run(cacheKey, proxyUrl, new Date().toISOString());
+  } catch (_) {}
+}
+
+/** 根据 ref 字符串计算缓存 key：本地路径直接使用；data URL 取 buffer sha256 前 16 字节的 hex */
+function buildCacheKey(ref, imageBuffer) {
+  if (!ref.startsWith('data:')) return ref;
+  return 'sha256:' + crypto.createHash('sha256').update(imageBuffer).digest('hex').slice(0, 32);
+}
+
+/**
+ * 调用 Google Gemini 图片生成 API（generateContent 接口，返回 base64 inlineData）
+ * 支持模型：gemini-2.5-flash-image / gemini-2.5-flash-image-preview /
+ *          gemini-3.1-flash-image-preview / gemini-3-pro-image-preview 等
+ * 参考图先查本地缓存表，未命中则上传到中转图床并缓存，再通过 fileData.fileUri 传给 Gemini。
+ * 避免 inlineData base64 大 payload 触发 503 memory overload。
+ */
+async function callGeminiImageApi(db, config, log, opts) {
+  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path } = opts;
+  const apiKey = config.api_key || '';
+  const base = (config.base_url || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
+  const modelName = model || 'gemini-2.5-flash-image';
+  const aspectRatio = geminiAspectRatio(size);
+  const tStart = Date.now();
+  const elapsed = () => `${Date.now() - tStart}ms`;
+
+  log.info('[Gemini图生] ▶ 开始', {
+    image_gen_id, model: modelName, aspect_ratio: aspectRatio,
+    base_url: base.slice(0, 60),
+    prompt_len: (prompt || '').length,
+    raw_ref_count: Array.isArray(reference_image_urls) ? reference_image_urls.length : 0,
+  });
+
+  // 参考图：查缓存 → 缓存未命中则上传图床 → 写缓存 → fileData.fileUri 传给 Gemini。
+  const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
+  const parts = [{ text: prompt || '' }];
+
+  for (let i = 0; i < rawRefs.slice(0, 3).length; i++) {
+    const ref = rawRefs[i];
+    log.info('[Gemini图生] 参考图 读取中', { image_gen_id, ref_index: i, ref: String(ref).slice(0, 80), elapsed: elapsed() });
+    const tRead = Date.now();
+
+    const resolved = resolveImageRef(ref, files_base_url, storage_local_path);
+    if (!resolved) {
+      log.warn('[Gemini图生] 参考图 无法解析，跳过', { image_gen_id, ref_index: i, ref: String(ref).slice(0, 80) });
+      continue;
+    }
+
+    // 读取图片 buffer + mimeType
+    let imageBuffer, mimeType;
+    if (resolved.startsWith('data:')) {
+      const m = resolved.match(/^data:([\w/]+);base64,(.+)$/);
+      if (!m) { log.warn('[Gemini图生] 参考图 data URL 格式异常，跳过', { image_gen_id, ref_index: i }); continue; }
+      mimeType = m[1];
+      imageBuffer = Buffer.from(m[2], 'base64');
+    } else {
+      try {
+        const imgRes = await fetch(resolved, { method: 'GET' });
+        if (!imgRes.ok) {
+          log.warn('[Gemini图生] 参考图 HTTP 读取失败，跳过', { image_gen_id, ref_index: i, status: imgRes.status, url: resolved.slice(0, 80) });
+          continue;
+        }
+        imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+        mimeType = (imgRes.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+      } catch (fetchErr) {
+        log.warn('[Gemini图生] 参考图 读取异常，跳过', { image_gen_id, ref_index: i, err: fetchErr.message });
+        continue;
+      }
+    }
+
+    log.info('[Gemini图生] 参考图 读取完成', {
+      image_gen_id, ref_index: i, mime: mimeType,
+      size_kb: Math.round(imageBuffer.length / 1024),
+      read_ms: Date.now() - tRead, elapsed: elapsed(),
+    });
+
+    // 跳过超过 10MB 的文件（避免上传超时）
+    if (imageBuffer.length > 10 * 1024 * 1024) {
+      log.warn('[Gemini图生] 参考图 超过10MB，跳过', { image_gen_id, ref_index: i, size_mb: (imageBuffer.length / 1024 / 1024).toFixed(1) });
+      continue;
+    }
+
+    // 查缓存
+    const cacheKey = buildCacheKey(ref, imageBuffer);
+    let fileUri = getProxyCache(db, cacheKey);
+    if (fileUri) {
+      log.info('[Gemini图生] 参考图 缓存命中', { image_gen_id, ref_index: i, cacheKey: cacheKey.slice(0, 60), fileUri });
+    } else {
+      log.info('[Gemini图生] 参考图 缓存未命中，上传图床 →', { image_gen_id, ref_index: i, elapsed: elapsed() });
+      // 未命中：上传到图床（内部最多重试 3 次），成功则写缓存
+      fileUri = await uploadToImageProxy(imageBuffer, mimeType, log, image_gen_id);
+      if (fileUri) {
+        setProxyCache(db, cacheKey, fileUri);
+        log.info('[Gemini图生] 参考图 已缓存', { image_gen_id, ref_index: i, elapsed: elapsed() });
+      } else {
+        log.warn('[Gemini图生] 参考图 上传图床失败，该参考图将跳过', { image_gen_id, ref_index: i, elapsed: elapsed() });
+      }
+    }
+
+    if (fileUri) {
+      parts.push({ fileData: { fileUri, mimeType } });
+      log.info('[Gemini图生] 参考图 已加入 parts', { image_gen_id, ref_index: i, fileUri });
+    }
+  }
+
+  log.info('[Gemini图生] 参考图处理完毕，准备请求 Gemini API', {
+    image_gen_id, parts_count: parts.length, ref_parts: parts.length - 1, elapsed: elapsed(),
+  });
+
+  // 注意：aspectRatio / numberOfImages 必须直接放在 generationConfig 顶层，
+  // 不能嵌套为 imageGenerationConfig（那是 Imagen 专属字段），
+  // 嵌套会触发 MALFORMED_FUNCTION_CALL 导致模型内部 google:image_gen 工具调用失败。
+  const body = {
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      responseModalities: ['IMAGE', 'TEXT'],
+      numberOfImages: 1,
+      aspectRatio,
+    },
+  };
+
+  const url = `${base}/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  log.info('[Gemini图生] → 发送请求', { image_gen_id, model: modelName, url: url.replace(/key=[^&]+/, 'key=***').slice(0, 120), elapsed: elapsed() });
+
+  const tReq = Date.now();
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  log.info('[Gemini图生] ← 收到响应', { image_gen_id, status: res.status, req_ms: Date.now() - tReq, elapsed: elapsed() });
+
+  const raw = await res.text();
+  if (!res.ok) {
+    let errMsg = 'Gemini 图片生成请求失败: ' + res.status;
+    try {
+      const errJson = JSON.parse(raw);
+      const msg = errJson.error?.message || errJson.message;
+      if (msg) errMsg += ' - ' + String(msg).slice(0, 200);
+    } catch (_) {
+      if (raw) errMsg += ' - ' + raw.slice(0, 200);
+    }
+    log.error('[Gemini图生] ✗ API错误', { image_gen_id, status: res.status, body: raw.slice(0, 400), total_elapsed: elapsed() });
+    return { error: errMsg };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    log.error('[Gemini图生] ✗ 响应 JSON 解析失败', { image_gen_id, raw_preview: raw.slice(0, 300), total_elapsed: elapsed() });
+    return { error: 'Gemini 图片生成返回格式异常' };
+  }
+
+  // 从 candidates → content → parts 中找 inlineData（图片）
+  const candidates = data?.candidates || [];
+  for (const candidate of candidates) {
+    for (const part of candidate?.content?.parts || []) {
+      if (part.inlineData?.data) {
+        const mimeType = part.inlineData.mimeType || 'image/png';
+        const dataUrl = `data:${mimeType};base64,${part.inlineData.data}`;
+        log.info('[Gemini图生] ✓ 成功', { image_gen_id, model: modelName, mime: mimeType, total_elapsed: elapsed() });
+        return { image_url: dataUrl };
+      }
+    }
+  }
+
+  log.warn('[Gemini图生] ✗ 响应中无图片内容', { image_gen_id, candidates_count: candidates.length, raw_preview: raw.slice(0, 500), total_elapsed: elapsed() });
+  return { error: 'Gemini 未返回图片内容，请检查模型名称或 API Key 权限' };
+}
+
+/**
  * 调用提供商图片生成 API（OpenAI /images/generations 风格 或 通义万象 multimodal-generation）
  * @param {object} db - database
  * @param {object} log - logger
@@ -608,25 +895,40 @@ async function callImageApi(db, log, opts) {
   }
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
+  // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
+  const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
 
-  if (provider === 'dashscope' || provider === 'qwen_image') {
+  log.info('[图生] callImageApi 路由', {
+    image_gen_id,
+    protocol,
+    provider,
+    model,
+    size,
+    imageServiceType,
+    ref_count: Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.length : 0,
+  });
+
+  if (protocol === 'dashscope') {
     return callDashScopeImageApi(config, log, {
-      prompt,
-      model,
-      size,
-      image_gen_id,
+      prompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
   }
 
-  if (provider === 'nano_banana') {
+  if (protocol === 'nano_banana') {
     return callNanoBananaImageApi(config, log, {
-      prompt,
-      model,
-      size,
-      image_gen_id,
+      prompt, model, size, image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+    });
+  }
+
+  if (protocol === 'gemini') {
+    return callGeminiImageApi(db, config, log, {
+      prompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
@@ -634,9 +936,9 @@ async function callImageApi(db, log, opts) {
   }
 
   const url = buildImageUrl(config);
-  const isVolc = ['volces', 'volcengine', 'volc'].includes(provider);
+  const isVolc = protocol === 'volcengine';
   // doubao-seedream 系列模型（含通过自定义代理使用的场景）：使用 volcengine 图片 API 规范
-  const isSeedream = /seedream|doubao/i.test(model);
+  const isSeedream = isVolc || /seedream|doubao/i.test(model);
   // 解析参考图：本地路径/localhost URL → base64，公网 URL → 直接传
   const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
   const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);

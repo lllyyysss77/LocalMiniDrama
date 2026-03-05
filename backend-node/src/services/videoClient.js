@@ -3,6 +3,17 @@ const fs = require('fs');
 const path = require('path');
 const aiConfigService = require('./aiConfigService');
 
+/**
+ * 根据 provider 名推断视频接口规范（api_protocol 未设置时的兜底逻辑）
+ */
+function inferVideoProtocol(provider) {
+  const p = String(provider || '').toLowerCase();
+  if (p === 'dashscope') return 'dashscope';
+  if (p === 'gemini' || p === 'google') return 'gemini';
+  if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
+  return 'openai';
+}
+
 // 使用前端设置的「默认」与「优先级」：listConfigs 已按 is_default DESC, priority DESC 排序
 function getDefaultVideoConfig(db, preferredModel) {
   const configs = aiConfigService.listConfigs(db, 'video');
@@ -276,6 +287,112 @@ async function callDashScopeVideoApi(config, log, opts) {
 }
 
 /**
+ * 调用 Google Gemini Veo 视频生成 API（predictLongRunning 长运行任务）
+ * 支持模型：veo-3.1-generate-preview / veo-3.0-generate-preview / veo-3.0-fast-generate-preview
+ * 支持 t2v（纯文本）和 i2v（图片转视频）
+ */
+async function callGeminiVideoApi(config, log, opts) {
+  const { prompt, duration, aspect_ratio, image_url, video_gen_id, files_base_url, storage_local_path, model } = opts;
+  const apiKey = config.api_key || '';
+  const base = (config.base_url || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
+  const modelName = model || 'veo-3.0-generate-preview';
+
+  // durationSeconds 限制在 5-8 秒
+  const durationSec = Math.min(8, Math.max(5, Math.round(Number(duration) || 8)));
+  const ratio = aspect_ratio || '16:9';
+
+  const instance = { prompt: prompt || '' };
+
+  // i2v：将图片转为 base64（Gemini 不支持 localhost URL，需本地读文件或 fetch 公网 URL）
+  if (image_url && image_url.trim()) {
+    let imageB64 = null;
+    let mimeType = 'image/jpeg';
+    const imgUrl = image_url.trim();
+    if (imgUrl.startsWith('data:')) {
+      const m = imgUrl.match(/^data:([\w/]+);base64,(.+)$/);
+      if (m) { imageB64 = m[2]; mimeType = m[1]; }
+    } else if ((files_base_url || '').match(/localhost|127\.0\.0\.1/i) && storage_local_path) {
+      const baseUrl = (files_base_url || '').replace(/\/$/, '');
+      const afterStatic = imgUrl.split('/static/')[1] || imgUrl.replace(baseUrl + '/', '').replace(baseUrl, '');
+      const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
+      if (relPath) {
+        const filePath = path.join(storage_local_path, relPath);
+        try {
+          if (fs.existsSync(filePath)) {
+            const buf = fs.readFileSync(filePath);
+            const ext = path.extname(filePath).toLowerCase();
+            mimeType = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }[ext] || 'image/jpeg';
+            imageB64 = buf.toString('base64');
+          }
+        } catch (_) {}
+      }
+    } else {
+      try {
+        const imgRes = await fetch(imgUrl, { method: 'GET' });
+        if (imgRes.ok) {
+          const buf = Buffer.from(await imgRes.arrayBuffer());
+          const ct = imgRes.headers.get('content-type') || 'image/jpeg';
+          mimeType = ct.split(';')[0].trim();
+          imageB64 = buf.toString('base64');
+        }
+      } catch (_) {}
+    }
+    if (imageB64) {
+      instance.image = { bytesBase64Encoded: imageB64, mimeType };
+    }
+  }
+
+  const body = {
+    instances: [instance],
+    parameters: {
+      aspectRatio: ratio,
+      durationSeconds: durationSec,
+      sampleCount: 1,
+    },
+  };
+
+  const url = `${base}/v1beta/models/${encodeURIComponent(modelName)}:predictLongRunning`;
+  log.info('Gemini Video API request', { model: modelName, ratio, durationSec, video_gen_id, has_image: !!instance.image });
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
+    body: JSON.stringify(body),
+  });
+  const raw = await res.text();
+  if (!res.ok) {
+    let errMsg = 'Gemini 视频生成请求失败: ' + res.status;
+    try {
+      const errJson = JSON.parse(raw);
+      const msg = errJson.error?.message || errJson.message;
+      if (msg) errMsg += ' - ' + String(msg).slice(0, 200);
+    } catch (_) {
+      if (raw) errMsg += ' - ' + raw.slice(0, 200);
+    }
+    log.error('Gemini Video API failed', { status: res.status, body: raw.slice(0, 300), video_gen_id });
+    return { error: errMsg };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return { error: 'Gemini 视频生成返回格式异常' };
+  }
+
+  // 返回 operation name 作为 task_id，后续由 pollVideoTask 轮询
+  const operationName = data.name;
+  if (operationName) {
+    log.info('Gemini Video task created', { operation: operationName, video_gen_id });
+    return { task_id: operationName, status: 'processing' };
+  }
+  return { error: 'Gemini 未返回 operation name，请检查 API Key 或模型权限' };
+}
+
+/**
  * 调用视频生成 API（ChatFire/豆包 或 通义万相）
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
  */
@@ -287,8 +404,10 @@ async function callVideoApi(db, log, opts) {
   }
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
+  // api_protocol 显式指定接口规范，优先级高于 provider 推断
+  const protocol = (config.api_protocol || '').toLowerCase() || inferVideoProtocol(provider);
 
-  if (provider === 'dashscope') {
+  if (protocol === 'dashscope') {
     return callDashScopeVideoApi(config, log, {
       prompt,
       model,
@@ -303,11 +422,24 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'gemini') {
+    return callGeminiVideoApi(config, log, {
+      prompt,
+      model,
+      duration: opts.duration,
+      aspect_ratio,
+      image_url: opts.image_url,
+      video_gen_id: opts.video_gen_id,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+    });
+  }
+
   const url = buildVideoUrl(config);
   const dur = duration ? Number(duration) : 5;
   const ratio = aspect_ratio || '16:9';
 
-  const isVolc = ['volces', 'volcengine', 'volc'].includes((config.provider || '').toLowerCase());
+  const isVolc = protocol === 'volcengine';
   // 火山引擎 model 名称标准化（把显示名转成 API 端点 ID）
   const finalModel = isVolc ? normalizeVolcModel(model) : model;
   const hasImage = !!(image_url && image_url.trim());
@@ -395,19 +527,41 @@ async function callVideoApi(db, log, opts) {
  * 轮询任务状态直到完成或失败（兼容豆包/ChatFire 与 通义万相 DashScope）
  */
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
-  const isDashScope = (config.provider || '').toLowerCase() === 'dashscope';
+  const provider = (config.provider || '').toLowerCase();
+  const protocol = (config.api_protocol || '').toLowerCase() || inferVideoProtocol(provider);
+  const isDashScope = protocol === 'dashscope';
+  const isGemini = protocol === 'gemini';
   const queryUrl = () => buildQueryUrl(config, taskId);
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise((r) => setTimeout(r, intervalMs));
-    const url = queryUrl();
     try {
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: { Authorization: 'Bearer ' + (config.api_key || '') },
-      });
+      let url, headers;
+      if (isGemini) {
+        const base = (config.base_url || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
+        // taskId 是完整 operation name，如 "operations/abc123"
+        url = `${base}/v1beta/${taskId}`;
+        headers = { 'x-goog-api-key': config.api_key || '' };
+      } else {
+        url = queryUrl();
+        headers = { Authorization: 'Bearer ' + (config.api_key || '') };
+      }
+      const res = await fetch(url, { method: 'GET', headers });
       const raw = await res.text();
       if (!res.ok) continue;
       const data = JSON.parse(raw);
+
+      if (isGemini) {
+        if (data.error) {
+          return { error: data.error.message || 'Gemini 视频任务失败' };
+        }
+        if (data.done === true) {
+          const videoUri = data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
+          if (videoUri) return { video_url: videoUri };
+          return { error: 'Gemini 视频生成完成但未返回视频地址' };
+        }
+        continue;
+      }
+
       if (isDashScope) {
         const taskStatus = data?.output?.task_status;
         const videoUrl = parseDashScopeVideoUrl(data);

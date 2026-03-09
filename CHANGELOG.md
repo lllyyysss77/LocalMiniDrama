@@ -4,24 +4,27 @@
 
 ---
 
-## [1.1.12] - 2026-03-09
+## [1.1.13] - 2026-03-09
 
 ### 新增
 
-- **分镜图相机角度视角修正**：`framePromptService.js` 新增 `expandAngleDescription()`，将分镜的 `angle` 字段（平视/仰视/俯视/侧面/背面）翻译为完整的相机透视描述注入图像提示词上下文，使 AI 生成的背景视角与镜头角度一致（仰视→背景呈天空仰视透视；俯视→背景呈鸟瞰俯视；背面→角色背对镜头等）；`episodeStoryboardService.generateImagePrompt()` 同步加入角度描述，初始 `image_prompt` 也带正确视角
-- **四宫格序列图模式**：分镜生成配置区新增全局「四宫格序列图」开关（`el-switch`），开启后：
-  - 生成分镜图时传 `frame_type: 'quad_grid'`，后端并行生成首帧/关键帧×2/尾帧共 4 个帧提示词，拼装为标准 2×2 象限布局的四宫格提示词，仅调用一次图片 API 生成单张序列图
-  - 图片加载后前端自动用 Canvas API 将四宫格整图拆分为 4 个独立面板（无需额外依赖库）
-  - 四宫格整图（预览）展示在上方，4 个拆分面板展示在下方，随时点击任意面板即可上传并设为主分镜图，支持反复切换
-  - 当前选中的面板高亮显示绿色边框 + ✓ 图标；右上角附「查看四宫格原图」链接
-  - 批量生成分镜图同样支持四宫格模式
-  - 切换剧集/刷新页面后，已有四宫格图的分镜自动恢复面板拆分状态
+- **分镜图相机角度视角修正**：`framePromptService.js` 新增 `expandAngleDescription()`，将分镜的 `angle` 字段（平视/仰视/俯视/侧面/背面）翻译为完整的相机透视描述，注入图像提示词上下文，使 AI 生成的背景视角与镜头角度一致
+- **四宫格序列图模式（后端拆分）**：分镜配置区新增全局「四宫格序列图」开关。开启后：
+  - 生成分镜图时传 `frame_type: 'quad_grid'`，后端并行生成首帧/关键帧×2/尾帧共 4 个帧提示词，拼装为 2×2 象限布局提示词调用一次图片 API
+  - 图片保存到本地后，后端使用 `sharp` 自动将整图拆分为 4 张子图（左上/右上/左下/右下），每张子图左上角叠加位置标签，分别存为独立的 `image_generation` 记录（`frame_type = quad_panel_0~3`）
+  - 4 张子图与普通生成图完全一致，支持点击缩略图切换主图、重新生成自动更新、历史记录保留
+  - 主图选择持久化到 `storyboard.image_url / local_path`，刷新页面后自动从后端恢复
+
+### 修复
+
+- **分镜主图刷新后恢复**：`dramaService.rowToStoryboard()` 和 `storyboardService.getStoryboardById()` 均补充返回 `image_url`、`local_path`、`main_panel_idx` 字段，前端 `restoreSelectionsFromBackend()` 可正确从后端数据比对恢复主图选中状态
+- **四宫格生成无变化**：移除前端 Canvas 拆分逻辑后，重新生成触发新的后端拆分，不再受旧内存缓存影响
+- **四宫格图片白框**：prompt 改为"NO borders of any color (black, white, gray)，panels must be seamlessly adjacent with no gaps"，杜绝任何颜色边框
 
 ### 架构
 
-- `imageService.js` 新增 `buildQuadGridPrompt()`，通过 `framePromptService.generateSingleFrameExported` 并行调用 AI 生成 4 帧提示词并组装
-- `framePromptService.js` 导出 `generateSingleFrameExported`，供外部服务复用帧提示词生成能力
-- 利用现有 `image_generations.frame_type` 字段区分四宫格图与普通图，无需新增数据库列
+- **后端**：`imageService.js` 新增 `splitQuadGridToImages()`（依赖 `sharp`），Step 7 自动触发；`buildQuadGridPrompt()` 组装四宫格提示词；`storyboards` 表新增 `image_url`、`local_path`、`main_panel_idx` 列（migrate.js 自动迁移）
+- **前端**：删除全部 Canvas 拆分相关代码（`sbQuadPanels`、`splitImageIntoQuadrants`、`triggerSplitQuadGrid`、`_persistPanelToBackend` 等约 120 行），四宫格子图完全复用普通单张图片的展示与选择流程；缩略图条对 `quad_panel_*` 类型图片自动显示位置标签
 
 ---
 

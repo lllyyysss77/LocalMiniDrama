@@ -341,4 +341,5 @@ module.exports = {
   loadScene,
   getFramePrompts: (db, storyboardId) => storyboardService.getFramePrompts(db, storyboardId),
   generateSingleFrameExported: generateSingleFrame,
+  expandAngleDescription,
 };

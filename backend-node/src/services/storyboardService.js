@@ -30,7 +30,7 @@ function createStoryboard(db, log, req) {
 function updateStoryboard(db, log, id, req) {
   const row = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!row) return null;
-  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'action', 'atmosphere', 'image_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'video_url', 'status', 'shot_type', 'angle', 'movement'];
+  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'action', 'atmosphere', 'image_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'status', 'shot_type', 'angle', 'movement'];
   const updates = [];
   const params = [];
   // 前端可能传 character_ids，与 characters 统一：存为 JSON 字符串
@@ -91,6 +91,9 @@ function getStoryboardById(db, id) {
     movement: r.movement,
     characters,
     composed_image: r.composed_image,
+    image_url: r.image_url ?? null,
+    local_path: r.local_path ?? null,
+    main_panel_idx: r.main_panel_idx != null ? Number(r.main_panel_idx) : null,
     video_url: r.video_url,
     status: r.status || 'pending',
     created_at: r.created_at,

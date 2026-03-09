@@ -736,12 +736,12 @@
               </div>
               <div
                 class="sb-image-area"
-                :class="{ 'sb-image-area--dragover': dragOverSbId === sb.id, 'sb-image-area--has-quad': !!getQuadGridImage(sb.id) }"
+                :class="{ 'sb-image-area--dragover': dragOverSbId === sb.id, 'sb-image-area--has-quad': getStripItems(sb.id).length > 0 }"
                 @dragover="onSbImageDragOver($event, sb.id)"
                 @dragleave="onSbImageDragLeave($event, sb.id)"
                 @drop="onSbImageDrop($event, sb)"
               >
-                <!-- ① 主图区（上方）：选中面板 > composed_image > 四宫格预览 > 空 -->
+                <!-- 主图区：最新选中/默认图 > legacy composed_image > 错误 > 空 -->
                 <div class="sb-main-image-wrap">
                   <template v-if="getSbImage(sb.id)">
                     <img
@@ -757,16 +757,6 @@
                       class="sb-generated-img"
                       alt=""
                       @click="openImagePreview(imageUrl(sb.composed_image || sb.image_url))"
-                    />
-                  </template>
-                  <!-- 四宫格存在但尚未选面板时，显示整图作为预览 -->
-                  <template v-else-if="getQuadGridImage(sb.id)">
-                    <img
-                      :src="assetImageUrl(getQuadGridImage(sb.id))"
-                      class="sb-generated-img sb-quad-preview"
-                      alt=""
-                      @load="triggerSplitQuadGrid(sb, getQuadGridImage(sb.id))"
-                      @click="openImagePreview(assetImageUrl(getQuadGridImage(sb.id)))"
                     />
                   </template>
                   <template v-else-if="sb.error_msg || sb.errorMsg">
@@ -786,48 +776,20 @@
                   </template>
                 </div>
 
-                <!-- ② 四宫格面板选择区（下方，始终可见，随时切换主图） -->
-                <template v-if="getQuadGridImage(sb.id)">
-                  <div class="quad-panel-selector">
-                    <div class="quad-panel-hint">
-                      <el-icon><InfoFilled /></el-icon>
-                      <span>点击格子切换主图</span>
-                      <el-button
-                        v-if="getSbImage(sb.id)"
-                        size="small"
-                        link
-                        type="primary"
-                        style="margin-left:4px;font-size:11px"
-                        @click="openImagePreview(assetImageUrl(getQuadGridImage(sb.id)))"
-                      >查看四宫格原图</el-button>
-                    </div>
-                    <div v-if="splittingQuadIds.has(sb.id)" class="quad-panel-loading">
-                      <el-icon class="is-loading"><Loading /></el-icon>
-                      正在拆分...
-                    </div>
-                    <div v-else-if="sbQuadPanels[sb.id]" class="quad-panel-grid">
-                      <div
-                        v-for="(panelUrl, idx) in sbQuadPanels[sb.id]"
-                        :key="idx"
-                        class="quad-panel-item"
-                        :class="{
-                          'quad-panel-item--selecting': selectingPanelSbId === sb.id,
-                          'quad-panel-item--active': isActiveQuadPanel(sb, idx),
-                        }"
-                        @click="onSelectQuadPanel(sb, idx)"
-                      >
-                        <img :src="panelUrl" class="quad-panel-thumb" alt="" />
-                        <div class="quad-panel-overlay">
-                          <el-icon v-if="selectingPanelSbId === sb.id" class="is-loading"><Loading /></el-icon>
-                          <template v-else>
-                            <el-icon v-if="isActiveQuadPanel(sb, idx)" style="color:#67c23a"><Check /></el-icon>
-                            <span>{{ ['左上', '右上', '左下', '右下'][idx] }}</span>
-                          </template>
-                        </div>
-                      </div>
-                    </div>
+                <!-- ② 统一缩略图条：未选中的面板 + 其他已生成图（点击切换主图，不触发上传） -->
+                <div v-if="getStripItems(sb.id).length" class="sb-imgs-strip">
+                  <span class="sb-imgs-strip-hint">历史图（点击设为主图）：</span>
+                  <div
+                    v-for="item in getStripItems(sb.id)"
+                    :key="item.key"
+                    class="sb-img-thumb"
+                    :title="item.label || '点击设为主图'"
+                    @click="onSelectStripItem(sb, item)"
+                  >
+                    <img :src="item.src" alt="" />
+                    <span v-if="item.label" class="sb-img-thumb-label">{{ item.label }}</span>
                   </div>
-                </template>
+                </div>
 
                 <div v-if="dragOverSbId === sb.id" class="sb-image-area-drop-hint">松开上传</div>
               </div>
@@ -1626,9 +1588,6 @@ const charLibraryKeyword = ref('')
 const storyboardCount = ref(null) // 分镜数量
 const videoDuration = ref(null) // 视频总长度
 const quadGridMode = ref(false) // 四宫格序列图模式
-const sbQuadPanels = ref({})        // sbId → [dataUrl1, dataUrl2, dataUrl3, dataUrl4]
-const splittingQuadIds = reactive(new Set()) // 正在拆分中的 sbId
-const selectingPanelSbId = ref(null) // 正在上传选中面板的 sbId
 const showEditCharLibrary = ref(false)
 const editCharLibraryForm = ref(null)
 const editCharLibrarySaving = ref(false)
@@ -1752,15 +1711,26 @@ function assetVideoUrl(item) {
 }
 /** 该分镜是否有图（接口拉取的或 composed_image） */
 function hasSbImage(sb) {
-  return !!(getSbImage(sb.id) || getQuadGridImage(sb.id) || (sb && (sb.composed_image || sb.image_url)))
+  return !!(getSbImage(sb.id) || (sb && (sb.composed_image || sb.image_url)))
 }
-/** 取该分镜下第一条已完成的非四宫格图片（用户上传/选中面板/普通生成） */
-function getSbImage(storyboardId) {
+/** 取该分镜下所有已完成的非四宫格图片列表 */
+function getSbAllImages(storyboardId) {
   const list = sbImages.value[storyboardId]
-  if (!Array.isArray(list)) return null
-  // 优先返回非四宫格图片（用户选中的面板或普通生成图）
-  return list.find((i) => i.status === 'completed' && i.frame_type !== 'quad_grid' && (i.image_url || i.local_path)) || null
+  if (!Array.isArray(list)) return []
+  return list.filter((i) => i.status === 'completed' && i.frame_type !== 'quad_grid' && (i.image_url || i.local_path))
 }
+/** 取当前主图（尊重 sbSelectedImgId 选择，否则默认第一张） */
+function getSbImage(storyboardId) {
+  const images = getSbAllImages(storyboardId)
+  if (!images.length) return null
+  const selectedId = sbSelectedImgId.value[storyboardId]
+  if (selectedId != null) {
+    const found = images.find((i) => i.id === selectedId)
+    if (found) return found
+  }
+  return images[0]
+}
+/** 取该分镜下的四宫格整图记录 */
 /** 取该分镜下的四宫格整图记录 */
 function getQuadGridImage(storyboardId) {
   const list = sbImages.value[storyboardId]
@@ -1812,110 +1782,69 @@ async function loadStoryboardMedia() {
   )
   sbImages.value = nextImages
   sbVideos.value = nextVideos
-  // 加载完成后，对已有四宫格图的分镜自动触发拆分（刷新/切换剧集时恢复面板）
-  for (const [sbIdStr, images] of Object.entries(nextImages)) {
-    const sbId = Number(sbIdStr)
-    const quadImg = Array.isArray(images)
-      ? images.find((i) => i.status === 'completed' && i.frame_type === 'quad_grid' && (i.image_url || i.local_path))
-      : null
-    if (quadImg && !sbQuadPanels.value[sbId] && !splittingQuadIds.has(sbId)) {
-      triggerSplitQuadGrid({ id: sbId }, quadImg)
-    }
-  }
+  // 从后端恢复主图选择
+  restoreSelectionsFromBackend()
 }
 
-// ── 四宫格拆图与面板选择 ─────────────────────────────────────────────
+// ── 主图选择 ─────────────────────────────────────────────────────────
 
-/** 用 Canvas 将四宫格整图拆分成 4 个象限 dataUrl */
-function splitImageIntoQuadrants(imageUrl) {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => {
-      const w = img.naturalWidth
-      const h = img.naturalHeight
-      const hw = Math.floor(w / 2)
-      const hh = Math.floor(h / 2)
-      const positions = [[0, 0], [hw, 0], [0, hh], [hw, hh]]
-      const panels = positions.map(([sx, sy]) => {
-        const canvas = document.createElement('canvas')
-        canvas.width = hw
-        canvas.height = hh
-        canvas.getContext('2d').drawImage(img, sx, sy, hw, hh, 0, 0, hw, hh)
-        return canvas.toDataURL('image/jpeg', 0.92)
-      })
-      resolve(panels)
-    }
-    img.onerror = () => reject(new Error('图片加载失败'))
-    img.src = imageUrl
-  })
-}
-
-/** 触发四宫格拆分（@load 事件调用，幂等） */
-async function triggerSplitQuadGrid(sb, quadImgRecord) {
-  if (sbQuadPanels.value[sb.id] || splittingQuadIds.has(sb.id)) return
-  splittingQuadIds.add(sb.id)
-  try {
-    const url = assetImageUrl(quadImgRecord)
-    if (!url) return
-    const panels = await splitImageIntoQuadrants(url)
-    sbQuadPanels.value = { ...sbQuadPanels.value, [sb.id]: panels }
-  } catch (e) {
-    console.warn('[四宫格] 拆分失败', e)
-  } finally {
-    splittingQuadIds.delete(sb.id)
-  }
-}
+const sbSelectedImgId = ref({})   // sbId → 选中的 image_generation.id
 
 /**
- * 判断某个面板是否是当前选中的主图
- * 通过比对 sbImages 中已上传面板的 local_path/image_url 与 sbQuadPanels 的对应项
- * 这里用简单方案：记录 sbSelectedPanelIdx[sbId] = idx
+ * 从后端 storyboard.image_url / local_path 恢复主图选择状态。
+ * 与 image_generation 记录比对，找到匹配的记录并恢复 sbSelectedImgId。
  */
-const sbSelectedPanelIdx = ref({}) // sbId → 选中的面板下标
-
-/** 判断面板是否为当前主图 */
-function isActiveQuadPanel(sb, idx) {
-  return sbSelectedPanelIdx.value[sb.id] === idx
-}
-
-/** dataUrl → Blob */
-function dataUrlToBlob(dataUrl) {
-  const [header, data] = dataUrl.split(',')
-  const mime = (header.match(/:(.*?);/) || [])[1] || 'image/jpeg'
-  const binary = atob(data)
-  const arr = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i)
-  return new Blob([arr], { type: mime })
-}
-
-/** 用户选中某个面板，上传后作为主分镜图（可重复选择） */
-async function onSelectQuadPanel(sb, panelIndex) {
-  if (selectingPanelSbId.value) return
-  const panels = sbQuadPanels.value[sb.id]
-  if (!panels || !panels[panelIndex]) return
-  selectingPanelSbId.value = sb.id
-  try {
-    const blob = dataUrlToBlob(panels[panelIndex])
-    const file = new File([blob], `quad_panel_${sb.id}_${panelIndex + 1}.jpg`, { type: 'image/jpeg' })
-    const uploadRes = await uploadAPI.uploadImage(file)
-    const url = uploadRes?.url || uploadRes?.path
-    if (!url) throw new Error('上传未返回地址')
-    await imagesAPI.upload({
-      storyboard_id: sb.id,
-      drama_id: dramaId.value,
-      image_url: url,
-      local_path: uploadRes?.local_path || undefined,
-    })
-    // 记录当前选中的面板下标，用于高亮标记
-    sbSelectedPanelIdx.value = { ...sbSelectedPanelIdx.value, [sb.id]: panelIndex }
-    ElMessage.success(`已切换为第 ${panelIndex + 1} 格（${['左上', '右上', '左下', '右下'][panelIndex]}）`)
-    await loadStoryboardMedia()
-  } catch (e) {
-    ElMessage.error(e.message || '设置主图失败')
-  } finally {
-    selectingPanelSbId.value = null
+function restoreSelectionsFromBackend() {
+  const boards = store.storyboards || []
+  for (const sb of boards) {
+    if (sbSelectedImgId.value[sb.id] != null) continue
+    const sbPath = (sb.local_path || '').trim()
+    const sbUrl  = (sb.image_url  || '').trim()
+    if (!sbPath && !sbUrl) continue
+    const images = getSbAllImages(sb.id)
+    const matched = images.find((img) =>
+      (sbPath && img.local_path && img.local_path === sbPath) ||
+      (sbUrl  && img.image_url  && img.image_url  === sbUrl)
+    )
+    if (matched) {
+      sbSelectedImgId.value = { ...sbSelectedImgId.value, [sb.id]: matched.id }
+    }
   }
+}
+
+/** 获取缩略图条数据：主图以外的所有已完成图片（四宫格子图 + 普通历史图） */
+function getStripItems(storyboardId) {
+  const allImgs = getSbAllImages(storyboardId)
+  const mainImg = getSbImage(storyboardId)
+  return allImgs
+    .filter((img) => !mainImg || img.id !== mainImg.id)
+    .map((img) => ({
+      key: `img-${img.id}`,
+      src: assetImageUrl(img),
+      type: 'img',
+      img,
+      label: quadPanelLabel(img.frame_type),
+    }))
+}
+
+/** 四宫格子图位置标签（frame_type = quad_panel_0~3 → 左上/右上/左下/右下） */
+function quadPanelLabel(frameType) {
+  const map = { quad_panel_0: '左上', quad_panel_1: '右上', quad_panel_2: '左下', quad_panel_3: '右下' }
+  return map[frameType] || null
+}
+
+/** 点击缩略图条中的图片切换为主图 */
+function onSelectStripItem(sb, item) {
+  onSelectSbMainImage(sb, item.img)
+}
+
+/** 选定某张 API 图为主图（持久化到后端） */
+function onSelectSbMainImage(sb, img) {
+  sbSelectedImgId.value = { ...sbSelectedImgId.value, [sb.id]: img.id }
+  storyboardsAPI.update(sb.id, {
+    image_url: img.image_url || null,
+    local_path: img.local_path || undefined,
+  }).catch(e => console.warn('[主图] 保存后端失败', e))
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1981,6 +1910,9 @@ async function doUploadSbImage(sbId, file) {
       local_path: localPath || undefined
     })
     ElMessage.success('上传成功')
+    // 清除手动选择，让最新上传的图（images[0]）自动成为主图
+    const { [sbId]: _r, ...rest } = sbSelectedImgId.value
+    sbSelectedImgId.value = rest
     await loadStoryboardMedia()
   } catch (e) {
     ElMessage.error(e.message || '上传失败')
@@ -3245,6 +3177,11 @@ function getSbFirstFrameUrl(sb) {
   return ''
 }
 
+/** 为视频生成获取参考图的真实 URL */
+async function getMainImageUrlForVideo(sb) {
+  return getSbFirstFrameUrl(sb)
+}
+
 /** 转为视频接口可请求的绝对 URL（后端/第三方需能访问） */
 function toAbsoluteImageUrl(url) {
   if (!url || !String(url).trim()) return ''
@@ -3345,14 +3282,14 @@ async function onSaveSbVideoPrompt(sb) {
 
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sb.video_prompt) return
-  const firstFrameUrl = getSbFirstFrameUrl(sb)
-  if (!firstFrameUrl) {
+  if (!getSbFirstFrameUrl(sb)) {
     ElMessage.warning('请先生成或上传该分镜的图片，再生成视频')
     return
   }
   generatingSbVideoId.value = sb.id
   sbVideoErrors.value[sb.id] = ''
   try {
+    const firstFrameUrl = await getMainImageUrlForVideo(sb)
     const absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
     const res = await videosAPI.create({
       drama_id: dramaId.value,
@@ -3488,9 +3425,9 @@ async function startBatchVideoGeneration() {
       if (batchVideoStopping.value) { ElMessage.info('批量生成已停止'); break }
       batchVideoProgress.value = { ...batchVideoProgress.value, current: i + 1 }
       const sb = todo[i]
-      const firstFrameUrl = getSbFirstFrameUrl(sb)
-      if (!firstFrameUrl) continue
+      if (!getSbFirstFrameUrl(sb)) continue
       try {
+        const firstFrameUrl = await getMainImageUrlForVideo(sb)
         const absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
         const res = await videosAPI.create({
           drama_id: dramaId.value,
@@ -3860,14 +3797,14 @@ async function runOneClickPipeline() {
     const boards2 = store.storyboards || []
     for (const sb of boards2) {
       await checkPause()
-      const firstFrameUrl = getSbFirstFrameUrl(sb)
-      if (!firstFrameUrl) continue
+      if (!getSbFirstFrameUrl(sb)) continue
       const vidList = sbVideos.value[sb.id] || []
       const hasVideo = vidList.some((v) => v.status === 'completed' && (v.video_url || v.local_path))
       if (hasVideo) continue
       pipelineCurrentStep.value = '正在生成分镜视频 #' + (sb.storyboard_number ?? sb.id)
       const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
       const ok = await pipelineWithRetry(stepName, async () => {
+        const firstFrameUrl = await getMainImageUrlForVideo(sb)
         const absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
         const res = await videosAPI.create({
           drama_id: dramaIdVal,
@@ -4078,13 +4015,13 @@ async function runRepairPipeline() {
     const boards2 = store.storyboards || []
     for (const sb of boards2) {
       await checkPause()
-      const firstFrameUrl = getSbFirstFrameUrl(sb)
-      if (!firstFrameUrl) continue
+      if (!getSbFirstFrameUrl(sb)) continue
       const vidList = sbVideos.value[sb.id] || []
       if (vidList.some((v) => v.status === 'completed' && (v.video_url || v.local_path))) continue
       pipelineCurrentStep.value = '正在生成分镜视频 #' + (sb.storyboard_number ?? sb.id)
       const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
       const ok = await pipelineWithRetry(stepName, async () => {
+        const firstFrameUrl = await getMainImageUrlForVideo(sb)
         const absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
         const res = await videosAPI.create({
           drama_id: dramaIdVal,
@@ -5262,11 +5199,60 @@ html.light .storyboard-row:hover {
 .sb-image-file-input { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
 .sb-gen-btn { margin-top: 4px; }
 .sb-image-area img.sb-generated-img { cursor: pointer; }
-/* 有四宫格时，image-area 改为纵向滚动布局 */
+/* 有四宫格或多图时，image-area 改为纵向滚动布局 */
 .sb-image-area--has-quad {
   flex-direction: column;
   align-items: stretch;
   overflow-y: auto;
+  max-height: 340px;
+}
+/* 普通多图缩略图条 */
+.sb-imgs-strip {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 6px 8px 4px;
+  overflow-x: auto;
+  border-top: 1px solid var(--el-border-color-lighter);
+  flex-shrink: 0;
+}
+.sb-imgs-strip-hint {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.sb-img-thumb {
+  position: relative;
+  cursor: pointer;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 2px solid transparent;
+  transition: border-color 0.2s;
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+}
+.sb-img-thumb:hover { border-color: var(--el-color-primary); }
+.sb-img-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.sb-img-thumb-label {
+  position: absolute;
+  bottom: 1px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 10px;
+  color: #fff;
+  background: rgba(0,0,0,0.45);
+  pointer-events: none;
 }
 /* 主图容器 */
 .sb-main-image-wrap {
@@ -5278,64 +5264,15 @@ html.light .storyboard-row:hover {
 }
 /* 四宫格整图作为上方预览时稍微缩小 */
 .sb-quad-preview { max-height: 160px; }
-/* 四宫格面板选择器 */
-.quad-panel-selector {
-  width: 100%;
-  margin-top: 8px;
-  border-top: 1px solid var(--el-border-color-lighter);
-  padding-top: 8px;
-}
-.quad-panel-hint {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--el-color-primary);
-  margin-bottom: 6px;
-}
-.quad-panel-loading {
+/* 四宫格拆分中占位 */
+.quad-splitting-tip {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+  padding: 8px;
 }
-.quad-panel-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-}
-.quad-panel-item {
-  position: relative;
-  cursor: pointer;
-  border-radius: 4px;
-  overflow: hidden;
-  border: 2px solid transparent;
-  transition: border-color 0.2s;
-}
-.quad-panel-item:hover { border-color: var(--el-color-primary); }
-.quad-panel-item--active { border-color: var(--el-color-success) !important; }
-.quad-panel-item--selecting { pointer-events: none; opacity: 0.7; }
-.quad-panel-thumb {
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: cover;
-  display: block;
-}
-.quad-panel-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.quad-panel-item:hover .quad-panel-overlay { opacity: 1; }
 .sb-image-actions {
   display: flex;
   gap: 8px;

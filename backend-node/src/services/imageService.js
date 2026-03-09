@@ -54,9 +54,95 @@ function getById(db, id) {
 }
 
 const path = require('path');
+const fs = require('fs');
 const imageClient = require('./imageClient');
 const taskService = require('./taskService');
 const uploadService = require('./uploadService');
+
+/**
+ * 将四宫格整图拆成 4 张子图，保存到本地，并在 image_generations 表中分别建立记录。
+ * @param {string} absLocalPath  图片的绝对路径（sharp 读取用）
+ * @param {string} storagePath   存储根目录的绝对路径（用于计算写入 DB 的相对路径）
+ * @param {string} imageUrl_     原图的远端 URL（用于推导子图 URL）
+ * frame_type 分别为 quad_panel_0~3，对应左上/右上/左下/右下。
+ */
+async function splitQuadGridToImages(db, log, originalRow, absLocalPath, storagePath, imageUrl_) {
+  if (!absLocalPath) {
+    log.warn('[四宫格拆分] 缺少本地文件路径，跳过拆分', { id: originalRow.id });
+    return;
+  }
+  let sharp;
+  try {
+    sharp = require('sharp');
+  } catch (e) {
+    log.warn('[四宫格拆分] sharp 未安装，跳过拆分', { error: e.message });
+    return;
+  }
+  try {
+    const meta = await sharp(absLocalPath).metadata();
+    const w = meta.width;
+    const h = meta.height;
+    const hw = Math.floor(w / 2);
+    const hh = Math.floor(h / 2);
+    // 4 象限：左上(0)、右上(1)、左下(2)、右下(3)
+    const quadrants = [
+      { left: 0,  top: 0,  width: hw,     height: hh,     idx: 0 },
+      { left: hw, top: 0,  width: w - hw, height: hh,     idx: 1 },
+      { left: 0,  top: hh, width: hw,     height: h - hh, idx: 2 },
+      { left: hw, top: hh, width: w - hw, height: h - hh, idx: 3 },
+    ];
+    const labels = ['左上', '右上', '左下', '右下'];
+    const absDir = path.dirname(absLocalPath);
+    const ext = path.extname(absLocalPath) || '.jpg';
+    const base = path.basename(absLocalPath, ext);
+    const now = new Date().toISOString();
+    for (const q of quadrants) {
+      try {
+        const panelFilename = `${base}_panel${q.idx}${ext}`;
+        // 绝对路径（文件写入）
+        const absPanelPath = path.join(absDir, panelFilename);
+        // 相对路径（存 DB，与原图同格式：images/ig_xxx_panel0.jpg）
+        const relPanelPath = path.relative(storagePath, absPanelPath).replace(/\\/g, '/');
+        // 用 sharp 裁剪并添加文字标签 SVG 角标
+        const labelSvg = `<svg width="${q.width}" height="${q.height}">
+  <rect x="4" y="4" width="42" height="24" rx="4" fill="rgba(0,0,0,0.55)"/>
+  <text x="25" y="21" font-size="14" fill="white" font-family="sans-serif" text-anchor="middle">${labels[q.idx]}</text>
+</svg>`;
+        await sharp(absLocalPath)
+          .extract({ left: q.left, top: q.top, width: q.width, height: q.height })
+          .composite([{ input: Buffer.from(labelSvg), top: 0, left: 0 }])
+          .jpeg({ quality: 92 })
+          .toFile(absPanelPath);
+        // 推导远端 URL（与原图同目录，只替换文件名）
+        const panelImageUrl = imageUrl_
+          ? imageUrl_.replace(/[^/\\]+$/, panelFilename)
+          : null;
+        // 插入 image_generation 记录（status=completed，直接可用）
+        db.prepare(
+          `INSERT INTO image_generations (storyboard_id, drama_id, scene_id, provider, prompt, model, frame_type, image_url, local_path, status, created_at, updated_at, completed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?)`
+        ).run(
+          originalRow.storyboard_id ?? null,
+          originalRow.drama_id ?? 0,
+          originalRow.scene_id ?? null,
+          originalRow.provider || 'system',
+          `[${labels[q.idx]}] ${originalRow.prompt || ''}`.slice(0, 1000),
+          originalRow.model ?? null,
+          `quad_panel_${q.idx}`,
+          panelImageUrl,
+          relPanelPath,
+          now, now, now
+        );
+        log.info(`[四宫格拆分] 面板 ${q.idx}(${labels[q.idx]}) 已保存`, { rel_path: relPanelPath });
+      } catch (panelErr) {
+        log.warn(`[四宫格拆分] 面板 ${q.idx} 失败`, { error: panelErr.message });
+      }
+    }
+    log.info('[四宫格拆分] 完成', { original_id: originalRow.id, storyboard_id: originalRow.storyboard_id });
+  } catch (err) {
+    log.warn('[四宫格拆分] 整体失败', { error: err.message });
+  }
+}
 
 /**
  * 四宫格模式：用 AI 生成 4 个帧提示词，拼成四宫格格式的单张图片提示词
@@ -85,7 +171,7 @@ async function buildQuadGridPrompt(db, log, cfg, storyboardId, model) {
 
   const style = cfg?.style?.default_style || '';
   const styleNote = style ? `. Art style: ${style}` : '';
-  const quadPrompt = `Create a 2x2 grid storyboard image with EXACTLY 4 equal-sized panels arranged in 2 rows and 2 columns (like a coordinate quadrant / comic book page layout). Each panel occupies exactly one quadrant of the image. Thick visible borders separate all panels${styleNote}.
+  const quadPrompt = `Create a 2x2 grid storyboard image with EXACTLY 4 equal-sized panels arranged in 2 rows and 2 columns (like a coordinate quadrant layout). Each panel occupies exactly one quadrant of the image. NO borders of any color (black, white, gray), NO dividing lines, NO frames between panels — the 4 panels must be seamlessly adjacent with no gaps or separators${styleNote}.
 
 TOP ROW (left to right):
 [Panel 1 - top-left quadrant, initial state]: ${first.prompt}
@@ -95,7 +181,7 @@ BOTTOM ROW (left to right):
 [Panel 3 - bottom-left quadrant, action continuation]: ${key2.prompt}
 [Panel 4 - bottom-right quadrant, final state]: ${last.prompt}
 
-CRITICAL LAYOUT RULES: The image MUST be divided into 4 equal quadrants in a 2x2 grid. Do NOT arrange panels in a single horizontal or vertical strip. The final image should look like 4 separate frames arranged in a 2-row by 2-column grid. Each panel is self-contained with consistent character appearance and art style.`;
+CRITICAL LAYOUT RULES: The image MUST be divided into 4 equal quadrants in a 2x2 grid. Do NOT arrange panels in a single strip. Do NOT add any black or dark borders/frames around the panels. Each panel is self-contained with consistent character appearance and art style.`;
   log.info('[四宫格] FINAL IMAGE PROMPT (发送给图片AI):\n' + quadPrompt);
   return quadPrompt;
 }
@@ -217,6 +303,39 @@ async function processImageGeneration(db, log, imageGenId) {
         }
       } catch (quadErr) {
         log.warn('[图生] 四宫格提示词生成失败，使用原始提示词', { id: imageGenId, error: quadErr.message });
+      }
+    }
+
+    // ── 单张分镜图：注入角度描述 + 调试日志 ────────────────────────────
+    if (row.storyboard_id && row.frame_type !== 'quad_grid') {
+      try {
+        const framePromptService = require('./framePromptService');
+        const loadConfig = require('../config').loadConfig;
+        const cfg = loadConfig();
+        const sbRow = db.prepare('SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(row.storyboard_id));
+        const sbAngle = sbRow?.angle || null;
+        log.info('[图生] 单张分镜图 ── 调试信息', {
+          id: imageGenId,
+          storyboard_id: row.storyboard_id,
+          angle_in_db: sbAngle,
+          prompt_preview: (row.prompt || '').slice(0, 200),
+        });
+        if (sbAngle) {
+          const isEn = (cfg?.language || 'zh') !== 'zh';
+          const angleDesc = framePromptService.expandAngleDescription(sbAngle, isEn);
+          if (angleDesc) {
+            const alreadyHas = row.prompt && row.prompt.toLowerCase().includes(angleDesc.toLowerCase().slice(0, 15));
+            if (!alreadyHas) {
+              row.prompt = (row.prompt || '') + ', ' + angleDesc;
+              db.prepare('UPDATE image_generations SET prompt = ?, updated_at = ? WHERE id = ?')
+                .run(row.prompt, new Date().toISOString(), imageGenId);
+              log.info('[图生] 已注入角度描述到提示词', { id: imageGenId, angle: sbAngle, angleDesc });
+            }
+          }
+        }
+        log.info('[图生] 单张分镜图 ── 最终提示词:\n' + (row.prompt || ''));
+      } catch (angleErr) {
+        log.warn('[图生] 角度注入失败，使用原始提示词', { id: imageGenId, error: angleErr.message });
       }
     }
 
@@ -388,6 +507,18 @@ async function processImageGeneration(db, log, imageGenId) {
       );
     }
     log.info('[图生] ✓ 完成', { id: imageGenId, local_path: localPath, total_elapsed: elapsed() });
+
+    // ── Step 7（四宫格）：自动拆分为 4 张子图，创建独立记录 ────────────
+    if (row.frame_type === 'quad_grid' && localPath) {
+      const storagePath2 = path.isAbsolute(cfg.storage?.local_path)
+        ? cfg.storage.local_path
+        : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+      // localPath 是相对路径（如 images/ig_xxx.jpg），sharp 需要绝对路径
+      const absLocalPath = path.join(storagePath2, localPath);
+      splitQuadGridToImages(db, log, row, absLocalPath, storagePath2, result.image_url).catch((e) => {
+        log.warn('[图生] Step7 四宫格拆分异常', { id: imageGenId, error: e.message });
+      });
+    }
 
   } catch (err) {
     const now2 = new Date().toISOString();

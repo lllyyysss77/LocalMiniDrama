@@ -1,5 +1,100 @@
 // 与 Go pkg/ai + application/services/ai_service 对齐：读取 ai_service_configs，调用 OpenAI 兼容的 chat completions
 const aiConfigService = require('./aiConfigService');
+const https = require('https');
+const http = require('http');
+
+/**
+ * 用 SSE 流式输出（stream: true）请求 OpenAI 兼容接口。
+ * 流式模式下 socket 每收到一个 token 就重置静默计时器，只要模型在生成就不会超时，
+ * 彻底解决分镜等长耗时任务的 "fetch failed / timeout" 问题。
+ * silenceTimeoutMs：连续多少毫秒无任何数据才判定超时（默认 60 秒）。
+ */
+function postJSONStream(url, headers, body, silenceTimeoutMs = 60000, onProgress = null) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const mod = parsed.protocol === 'https:' ? https : http;
+    // 强制开启流式输出
+    const streamBody = { ...body, stream: true };
+    const bodyStr = JSON.stringify(streamBody);
+    const reqHeaders = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(bodyStr),
+      ...headers,
+    };
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      headers: reqHeaders,
+    };
+
+    let silenceTimer = null;
+    const resetSilenceTimer = () => {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        req.destroy();
+        reject(new Error(`AI stream silence timeout after ${silenceTimeoutMs}ms`));
+      }, silenceTimeoutMs);
+    };
+
+    const req = mod.request(options, (res) => {
+      const statusCode = res.statusCode;
+      // 非 2xx 时先读完整 body 再报错（可能是 JSON 错误信息）
+      if (statusCode < 200 || statusCode >= 300) {
+        const errChunks = [];
+        res.on('data', (c) => errChunks.push(c));
+        res.on('end', () => {
+          clearTimeout(silenceTimer);
+          reject(new Error(`HTTP ${statusCode}: ${Buffer.concat(errChunks).toString('utf-8').slice(0, 200)}`));
+        });
+        return;
+      }
+
+      let accumulated = '';
+      let sseBuffer = '';
+      let firstToken = true;
+      resetSilenceTimer();
+
+      res.on('data', (chunk) => {
+        resetSilenceTimer();
+        sseBuffer += chunk.toString('utf-8');
+        // 按行解析 SSE
+        const lines = sseBuffer.split('\n');
+        sseBuffer = lines.pop(); // 保留不完整的最后一行
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const evt = JSON.parse(data);
+            const delta = evt.choices?.[0]?.delta?.content;
+            if (delta) {
+              if (firstToken) {
+                firstToken = false;
+                if (onProgress) onProgress(0, 'first_token');
+              }
+              accumulated += delta;
+              if (onProgress) onProgress(accumulated.length);
+            }
+          } catch (_) { /* 忽略无法解析的行 */ }
+        }
+      });
+
+      res.on('end', () => {
+        clearTimeout(silenceTimer);
+        resolve({ status: statusCode, body: accumulated });
+      });
+      res.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
+    });
+
+    req.on('error', (e) => { clearTimeout(silenceTimer); reject(e); });
+    resetSilenceTimer(); // 连接建立阶段也需要计时
+    req.write(bodyStr);
+    req.end();
+  });
+}
 
 // 使用前端设置的「默认」与「优先级」：listConfigs 已按 is_default DESC, priority DESC 排序
 function getDefaultConfig(db, serviceType) {
@@ -97,25 +192,23 @@ async function generateText(db, log, serviceType, userPrompt, systemPrompt, opti
     ...(finalMaxTokens != null ? { max_tokens: finalMaxTokens } : {}),
     ...(json_mode ? { response_format: { type: 'json_object' } } : {}),
   };
-  log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode });
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer ' + (config.api_key || ''),
-    },
-    body: JSON.stringify(body),
+  const startMs = Date.now();
+  log.info('AI generateText request', { url: url.slice(0, 60), model, max_tokens: finalMaxTokens ?? '(model default)', json_mode, stream: true });
+  const res = await postJSONStream(url, { Authorization: 'Bearer ' + (config.api_key || '') }, body, 60000, (receivedLen, event) => {
+    if (event === 'first_token') {
+      log.info('AI stream first token', { model, ttft_ms: Date.now() - startMs });
+    } else if (receivedLen > 0 && receivedLen % 500 < 20) {
+      // 每积累约 500 字符记录一次进度
+      log.info('AI stream progress', { model, received_chars: receivedLen, elapsed_ms: Date.now() - startMs });
+    }
   });
-  if (!res.ok) {
-    const errText = await res.text();
-    log.error('AI generateText failed', { status: res.status, body: errText.slice(0, 300) });
-    throw new Error('AI 请求失败: ' + res.status + ' ' + errText.slice(0, 200));
+  // 流式模式下 res.body 已是拼接好的完整文本内容（非 JSON）
+  const content = res.body;
+  const elapsedMs = Date.now() - startMs;
+  if (!content) {
+    throw new Error('AI 返回内容为空');
   }
-  const data = await res.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (content == null) {
-    throw new Error('AI 返回格式异常');
-  }
+  log.info('AI raw response received', { model, text_length: content.length, elapsed_ms: elapsedMs, text_preview: content.slice(0, 200) });
   return content;
 }
 

@@ -3,6 +3,7 @@ const loadConfig = require('../config').loadConfig;
 const promptI18n = require('./promptI18n');
 const aiClient = require('./aiClient');
 const taskService = require('./taskService');
+const { safeParseAIJSON } = require('../utils/safeJson');
 const storyboardService = require('./storyboardService');
 
 /**
@@ -131,20 +132,13 @@ function buildFallbackPrompt(cfg, scene, suffix) {
 }
 
 function parseFramePromptJSON(log, aiResponse) {
-  let cleaned = (aiResponse || '').trim();
-  const jsonBlock = /```json\s*([\s\S]*?)\s*```/.exec(cleaned);
-  if (jsonBlock) {
-    cleaned = jsonBlock[1].trim();
-  } else {
-    cleaned = cleaned.replace(/^`+|`+$/g, '').trim();
-  }
   try {
-    const data = JSON.parse(cleaned);
+    const data = safeParseAIJSON(aiResponse, {}, log);
     if (data && typeof data.prompt === 'string') {
       return { prompt: data.prompt, description: data.description || '' };
     }
   } catch (e) {
-    log.warn('Frame prompt JSON parse failed', { error: e.message, cleaned: cleaned.slice(0, 200) });
+    log.warn('Frame prompt JSON parse failed', { error: e.message, response_head: (aiResponse || '').slice(0, 200) });
   }
   return null;
 }

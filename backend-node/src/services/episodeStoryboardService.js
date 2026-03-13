@@ -304,8 +304,9 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     });
 
     let storyboards = [];
+    const parseMeta = {};
     try {
-      const parsed = safeParseAIJSON(text, log);
+      const parsed = safeParseAIJSON(text, null, log, parseMeta);
       storyboards = extractFirstArray(parsed) || [];
     } catch (e) {
       log.error('Parse storyboard JSON failed', {
@@ -326,7 +327,15 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
     }
 
     const totalDuration = storyboards.reduce((sum, sb) => sum + (Number(sb.duration) || 0), 0);
-    log.info('Storyboard generated', { task_id: taskId, episode_id: episodeId, count: storyboards.length, total_duration_seconds: totalDuration });
+    if (parseMeta.truncated) {
+      log.warn('Storyboard JSON was truncated by AI (max_tokens limit), result may be incomplete', {
+        task_id: taskId,
+        episode_id: episodeId,
+        rescued_count: storyboards.length,
+        raw_text_length: text ? String(text).length : 0,
+      });
+    }
+    log.info('Storyboard generated', { task_id: taskId, episode_id: episodeId, count: storyboards.length, total_duration_seconds: totalDuration, truncated: parseMeta.truncated || false });
 
     taskService.updateTaskStatus(db, taskId, 'processing', 70, '正在保存分镜头...');
 
@@ -343,6 +352,7 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
       total: saved.length,
       total_duration: totalDuration,
       duration_minutes: durationMinutes,
+      truncated: parseMeta.truncated || false,
     };
     taskService.updateTaskResult(db, taskId, resultData);
     log.info('Storyboard generation completed', { task_id: taskId, episode_id: episodeId });

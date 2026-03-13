@@ -82,8 +82,9 @@ function repairTruncatedJsonArray(str) {
  * @param {string} aiResponse
  * @param {object|Array} v - 默认值类型（用于判断期望返回类型）
  * @param {object} [log] - 可选 logger，有 warn/info 方法；不传则用 console.warn
+ * @param {object} [outMeta] - 可选输出元数据对象，解析后会写入 { truncated: boolean }
  */
-function safeParseAIJSON(aiResponse, v, log) {
+function safeParseAIJSON(aiResponse, v, log, outMeta) {
   const _warn = (msg, extra) => {
     if (log && typeof log.warn === 'function') {
       log.warn(msg, extra);
@@ -128,6 +129,7 @@ function safeParseAIJSON(aiResponse, v, log) {
           original_len: jsonStr.length,
           repaired_len: repaired.length,
         });
+        if (outMeta) outMeta.truncated = true;
         if (Array.isArray(v)) {
           v.length = 0;
           v.push(...(Array.isArray(parsed) ? parsed : []));
@@ -138,12 +140,14 @@ function safeParseAIJSON(aiResponse, v, log) {
       } catch (_) {}
     }
 
-    // 修复策略 2：jsonrepair 深度修复（处理未加引号的字符串、尾部逗号、单引号等 LLM 常见输出缺陷）
+    // 修复策略 2：jsonrepair 深度修复
+    // 经验证，jsonrepair 原生支持：未加引号的字符串值（含中文/全角括号）、
+    // 截断数组、尾逗号、单引号、Python 布尔值等几乎所有 LLM 常见输出缺陷。
     if (_jsonrepair) {
       try {
         const fixed = _jsonrepair(jsonStr);
         const parsed = JSON.parse(fixed);
-        _warn('AI JSON 修复成功（策略2：jsonrepair）', {
+        _warn('AI JSON 修复成功（jsonrepair）', {
           rescued_items: Array.isArray(parsed) ? parsed.length : 1,
           original_len: jsonStr.length,
           fixed_len: fixed.length,

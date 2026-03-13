@@ -214,15 +214,8 @@
           >
             一键生成视频
           </el-button>
-          <el-button
-            type="success"
-            plain
-            :loading="pipelineRunning && !pipelinePaused"
-            :disabled="!currentEpisodeId || pipelineRunning"
-            @click="startRepairPipeline"
-          >
-            补全并生成
-          </el-button>
+          <!-- 补全并生成：逻辑已与一键生成合并（均跳过已有数据），隐藏此按钮 -->
+          <!-- <el-button type="success" plain :loading="pipelineRunning && !pipelinePaused" :disabled="!currentEpisodeId || pipelineRunning" @click="startRepairPipeline">补全并生成</el-button> -->
           <template v-if="pipelineRunning">
             <el-button v-if="!pipelinePaused" type="warning" @click="pipelinePaused = true">暂停</el-button>
             <el-button v-else type="success" @click="onPipelineResume">继续</el-button>
@@ -3945,32 +3938,39 @@ async function runOneClickPipeline() {
       if (paused) { await waitForResume() }
     }
 
-    // 5. 分镜生成
-    await checkPause()
-    pipelineCurrentStep.value = '正在生成分镜...'
-    try {
-      const res = await dramaAPI.generateStoryboard(episodeId, { style, aspect_ratio: projectAspectRatio.value })
-      const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
-      if (taskId) {
-        const result = await pollTaskWithPause(taskId, () => loadDrama())
-        if (result?.paused) { await waitForResume(); return }
-        if (result?.error) { addPipelineError('分镜生成', result.error); return }
-      }
-      await loadDrama()
-      await pipelineRest()
-    } catch (e) {
-      addPipelineError('分镜生成', e.message || String(e))
-      return
-    }
-
-    // 6. 批量生成分镜图（并发，先拉取分镜图/视频列表再判断是否有图）
+    // 5. 分镜生成（已有则跳过）
     await checkPause()
     await loadStoryboardMedia()
-    const boards = (store.storyboards || []).filter((sb) => !hasSbImage(sb))
+    let boards = store.storyboards || []
+    if (boards.length === 0) {
+      pipelineCurrentStep.value = '正在生成分镜...'
+      try {
+        const res = await dramaAPI.generateStoryboard(episodeId, { style, aspect_ratio: projectAspectRatio.value })
+        const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
+        if (taskId) {
+          const result = await pollTaskWithPause(taskId, () => loadDrama())
+          if (result?.paused) { await waitForResume(); return }
+          if (result?.error) { addPipelineError('分镜生成', result.error); return }
+        }
+        await loadDrama()
+        await pipelineRest()
+      } catch (e) {
+        addPipelineError('分镜生成', e.message || String(e))
+        return
+      }
+      await loadStoryboardMedia()
+      boards = store.storyboards || []
+    } else {
+      pipelineCurrentStep.value = `已有 ${boards.length} 个分镜，跳过生成`
+    }
+
+    // 6. 批量生成分镜图（并发，boards 已在步骤5加载）
+    await checkPause()
+    const boardsWithoutImg = boards.filter((sb) => !hasSbImage(sb))
     {
       const concurrency = pipelineConcurrency.value
       pipelineCurrentStep.value = `正在生成分镜图（并发${concurrency}）...`
-      const { paused } = await runConcurrently(boards, concurrency, async (sb) => {
+      const { paused } = await runConcurrently(boardsWithoutImg, concurrency, async (sb) => {
         await checkPause()
         const stepName = '分镜图 #' + (sb.storyboard_number ?? sb.id)
         const ok = await pipelineWithRetry(stepName, async () => {
@@ -4214,7 +4214,8 @@ async function runRepairPipeline() {
             storyboard_id: sb.id,
             drama_id: dramaIdVal,
             prompt: sb.image_prompt || sb.description || '',
-            model: undefined
+            model: undefined,
+            style
           })
           if (res?.task_id) {
             const result = await pollTaskWithPause(res.task_id, () => loadStoryboardMedia())

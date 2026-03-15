@@ -8,6 +8,27 @@
 
 ---
 
+## [1.2.1] - 2026-03-15
+
+### 新增
+
+- **可灵 Kling AI 接入**：新增可灵图片生成协议（kling-image / kling-omni-image）及视频生成协议（kling-video / kling-omni-video / kling-motion-control），AI 配置页可直接选择可灵作为服务商，Base URL / 端点自动填充
+- **场景/道具"加入本集"**：场景库和道具库弹窗新增「加入本集」按钮，与角色库体验对齐；后端 `createScene` / `create`（prop）补充保存 `image_url`、`local_path` 字段，确保素材图片 URL 正确保存
+- **视频历史记录与主视频选择**：分镜视频重新生成后保留历史版本，下方缩略图条带一览可选；点击历史缩略图即切换主视频，并将选择持久化到分镜记录的 `video_url`；合成视频时后端优先使用用户选定版本，兜底取最新生成记录
+
+### 修复
+
+- **合成视频主视频不对**：`getVideoUrlForStoryboard` 调整为优先读 `storyboard.video_url`（用户选定主视频），再兜底 `video_generations ORDER BY created_at DESC`，修复合成时始终取最新生成记录、忽略用户已选定历史视频的问题
+- **重新生成视频后主视频混乱**：`onGenerateSbVideo` / `startBatchVideoGeneration` 在提交新生成任务前自动清除 `storyboard.video_url` 及前端 `sbSelectedVideoId`，确保新视频生成完成后合成使用最新记录
+
+### 文档
+
+- README 新增「AI 生成实拍效果」章节，展示即梦 1.0 生成的 3 段连续分镜视频，验证跨镜头角色一致性
+- README 新增 3 张界面截图（角色管理、专业分镜参数、场景库加入本集）
+- AI 服务商表格加入可灵 Kling AI（图片 + 视频）
+
+---
+
 ## [1.2.0] - 2026-03-14
 
 ### 新增

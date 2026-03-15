@@ -541,6 +541,7 @@ async function processImageGeneration(db, log, imageGenId) {
     if (row.storyboard_id && row.frame_type !== 'quad_grid' && row.frame_type !== 'nine_grid') {
       try {
         const framePromptService = require('./framePromptService');
+        const angleService = require('./angleService');
         const loadConfig = require('../config').loadConfig;
         const cfg = loadConfig();
         const sbRow = db.prepare('SELECT * FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(row.storyboard_id));
@@ -548,28 +549,64 @@ async function processImageGeneration(db, log, imageGenId) {
         const sbAngleH = sbRow?.angle_h || null;
         const sbAngleV = sbRow?.angle_v || null;
         const sbAngleS = sbRow?.angle_s || null;
+        const sbMovement     = sbRow?.movement      || null;
+        const sbLighting     = sbRow?.lighting_style || null;
+        const sbDof          = sbRow?.depth_of_field || null;
         log.info('[图生] 单张分镜图 ── 调试信息', {
           id: imageGenId,
           storyboard_id: row.storyboard_id,
           angle_in_db: sbAngle,
           angle_struct: sbAngleH ? `${sbAngleH}/${sbAngleV}/${sbAngleS}` : '(旧格式)',
+          movement: sbMovement,
+          lighting_style: sbLighting,
+          depth_of_field: sbDof,
           prompt_preview: (row.prompt || '').slice(0, 200),
         });
+
+        // 注入角度描述（方向/俯仰/景别）
         if (sbAngle || sbAngleH) {
           const isEn = (cfg?.language || 'zh') !== 'zh';
-          // 优先使用结构化三元组（更精准），降级到旧文本
           const angleDesc = framePromptService.expandAngleDescription(sbAngle, isEn, sbAngleH, sbAngleV, sbAngleS);
           if (angleDesc) {
             const alreadyHas = row.prompt && row.prompt.toLowerCase().includes(angleDesc.toLowerCase().slice(0, 15));
             if (!alreadyHas) {
               row.prompt = (row.prompt || '') + ', ' + angleDesc;
-              db.prepare('UPDATE image_generations SET prompt = ?, updated_at = ? WHERE id = ?')
-                .run(row.prompt, new Date().toISOString(), imageGenId);
               log.info('[图生] 已注入角度描述到提示词', { id: imageGenId, angle: sbAngle, angle_struct: `${sbAngleH}/${sbAngleV}/${sbAngleS}`, angleDesc });
             }
           }
         }
-        log.info('[图生] 单张分镜图 ── 角度注入后提示词:\n' + (row.prompt || ''));
+
+        // 注入运镜描述
+        if (sbMovement) {
+          const mvDesc = angleService.movementToPrompt(sbMovement);
+          if (mvDesc && !(row.prompt || '').toLowerCase().includes(mvDesc.slice(0, 12).toLowerCase())) {
+            row.prompt = (row.prompt || '') + ', ' + mvDesc;
+            log.info('[图生] 已注入运镜描述到提示词', { id: imageGenId, movement: sbMovement, mvDesc });
+          }
+        }
+
+        // 注入灯光风格
+        if (sbLighting) {
+          const ltDesc = angleService.lightingToPrompt(sbLighting);
+          if (ltDesc && !(row.prompt || '').toLowerCase().includes(ltDesc.slice(0, 12).toLowerCase())) {
+            row.prompt = (row.prompt || '') + ', ' + ltDesc;
+            log.info('[图生] 已注入灯光描述到提示词', { id: imageGenId, lighting_style: sbLighting, ltDesc });
+          }
+        }
+
+        // 注入景深
+        if (sbDof) {
+          const dofDesc = angleService.dofToPrompt(sbDof);
+          if (dofDesc && !(row.prompt || '').toLowerCase().includes(dofDesc.slice(0, 12).toLowerCase())) {
+            row.prompt = (row.prompt || '') + ', ' + dofDesc;
+            log.info('[图生] 已注入景深描述到提示词', { id: imageGenId, depth_of_field: sbDof, dofDesc });
+          }
+        }
+
+        // 统一回写注入后的 prompt
+        db.prepare('UPDATE image_generations SET prompt = ?, updated_at = ? WHERE id = ?')
+          .run(row.prompt, new Date().toISOString(), imageGenId);
+        log.info('[图生] 单张分镜图 ── 摄影参数注入后提示词:\n' + (row.prompt || ''));
       } catch (angleErr) {
         log.warn('[图生] 角度注入失败，使用原始提示词', { id: imageGenId, error: angleErr.message });
       }
@@ -608,7 +645,7 @@ async function processImageGeneration(db, log, imageGenId) {
       } catch (_) {}
     }
     if (!reference_image_urls && row.storyboard_id) {
-      const sb = db.prepare('SELECT scene_id, characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(row.storyboard_id);
+      const sb = db.prepare('SELECT scene_id, characters, angle_s, shot_type FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(row.storyboard_id);
       if (sb) {
         const refs = [];
         const refLabels = [];
@@ -685,6 +722,69 @@ async function processImageGeneration(db, log, imageGenId) {
           }
         } catch (_) {}
 
+        // ── Step 2.1: 文本补扫 — 检测 prompt/action/dialogue 中提及但未关联的角色 ────────────────
+        // 解决问题：分镜生成时漏掉的角色不会在此处被自动补充，S2 过滤也无能为力。
+        // 策略：扫描当前分镜的所有文本字段，与剧集全角色名做字符串匹配，命中但未在 refs 里的则补充。
+        if (row.drama_id && refs.length < 4) {
+          try {
+            let sbScanText = '';
+            try {
+              const sbScan = db.prepare(
+                'SELECT action, dialogue, result FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+              ).get(row.storyboard_id);
+              if (sbScan) sbScanText = [sbScan.action, sbScan.dialogue, sbScan.result].filter(Boolean).join(' ');
+            } catch (_) {}
+            const scanText = [row.prompt || '', row.description || '', sbScanText].join(' ').toLowerCase();
+
+            // 从已有标签中提取已覆盖的角色名（避免重复）
+            const coveredCharNames = new Set(
+              refLabels.map((l) => { const m = l.match(/for\s+"([^"]+)"/i); return m ? m[1].toLowerCase() : null; }).filter(Boolean)
+            );
+
+            const dramaChars = db.prepare(
+              'SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL'
+            ).all(Number(row.drama_id));
+
+            for (const dChar of dramaChars) {
+              if (!dChar.name) continue;
+              if (coveredCharNames.has(dChar.name.toLowerCase())) continue;
+              if (!scanText.includes(dChar.name.toLowerCase())) continue;
+              if (refs.length >= 4) break; // 最多 4 张参考图，防止超限
+              const charPanel = db.prepare(
+                `SELECT local_path, image_url FROM image_generations
+                 WHERE character_id = ? AND frame_type = 'quad_panel_1' AND status = 'completed'
+                 ORDER BY id DESC LIMIT 1`
+              ).get(Number(dChar.id));
+              const dCharRow = db.prepare(
+                'SELECT image_url, local_path FROM characters WHERE id = ? AND deleted_at IS NULL'
+              ).get(Number(dChar.id));
+              const charRef = (charPanel && (charPanel.local_path || charPanel.image_url))
+                || dCharRow?.local_path || dCharRow?.image_url;
+              if (charRef && !refs.includes(charRef)) {
+                refs.push(charRef);
+                const isPanel = !!(charPanel && (charPanel.local_path || charPanel.image_url));
+                refLabels.push(`Image ${refs.length}: character appearance reference for "${dChar.name}"${isPanel ? ' (front full-body view)' : ' (character image)'}`);
+                coveredCharNames.add(dChar.name.toLowerCase());
+                log.info('[图生] Step2.1 文本补扫到未关联角色，已添加参考图', { id: imageGenId, name: dChar.name });
+                // 同步回写到 storyboards.characters，避免下次重复扫描
+                try {
+                  const sbCharRow = db.prepare('SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(row.storyboard_id));
+                  let charList = [];
+                  try { charList = JSON.parse(sbCharRow?.characters || '[]'); } catch (_) { charList = []; }
+                  if (!charList.find((c) => Number(typeof c === 'object' && c != null ? c.id : c) === dChar.id)) {
+                    charList.push({ id: dChar.id, name: dChar.name });
+                    db.prepare('UPDATE storyboards SET characters = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+                      .run(JSON.stringify(charList), new Date().toISOString(), Number(row.storyboard_id));
+                    log.info('[图生] Step2.1 已将角色写入 storyboards.characters', { id: imageGenId, name: dChar.name });
+                  }
+                } catch (_) {}
+              }
+            }
+          } catch (scanErr) {
+            log.warn('[图生] Step2.1 文本补扫异常，跳过', { id: imageGenId, error: scanErr.message });
+          }
+        }
+
         if (refs.length > 0) {
           reference_image_urls = refs;
           reference_source = 'storyboard 自动解析';
@@ -714,7 +814,19 @@ async function processImageGeneration(db, log, imageGenId) {
       reference_context_note
     ) {
       try {
-        const promptText = ((row.prompt || '') + ' ' + (row.description || '')).toLowerCase();
+        // 同时检查分镜的 action / dialogue / result 字段，避免角色通过台词/动作出场却被误过滤
+        let sbTextForFilter = '';
+        try {
+          const sbForFilter = db.prepare(
+            'SELECT action, dialogue, result FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+          ).get(Number(row.storyboard_id));
+          if (sbForFilter) {
+            sbTextForFilter = [sbForFilter.action, sbForFilter.dialogue, sbForFilter.result]
+              .filter(Boolean).join(' ');
+          }
+        } catch (_) {}
+        const promptText = [row.prompt || '', row.description || '', sbTextForFilter]
+          .join(' ').toLowerCase();
         const labels = reference_context_note.split('\n');
         const filteredRefs = [];
         const filteredLabels = [];
@@ -793,17 +905,82 @@ async function processImageGeneration(db, log, imageGenId) {
     }
     log.info('[图生] Step3 尺寸', { id: imageGenId, size: imageSize, elapsed: elapsed() });
 
-    // ── Step 3.5: 分镜 prompt 文本AI二次优化（仅分镜单帧，且 ai_model_map 中配置了 image_polish 才启用）──
+    // ── Step 3.5: 分镜 prompt 文本AI二次优化（单帧分镜；优先用 image_polish 模型，无则 fallback 默认文本模型）──
     let finalPrompt = row.prompt;
     const isSingleStoryboard = row.storyboard_id && row.frame_type !== 'quad_grid' && row.frame_type !== 'nine_grid';
     if (isSingleStoryboard && row.prompt) {
       try {
-        const polishMapped = aiClient.getConfigFromModelMap(db, 'image_polish');
-        if (polishMapped) {
+        // 若分镜已有 polished_prompt（手动编辑或上次优化结果），直接使用，不再重复调 AI
+        let alreadyPolished = false;
+        if (row.storyboard_id) {
+          const sbPolished = db.prepare(
+            'SELECT polished_prompt FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+          ).get(Number(row.storyboard_id));
+          if (sbPolished?.polished_prompt?.trim().length > 10) {
+            finalPrompt = sbPolished.polished_prompt.trim();
+            alreadyPolished = true;
+            log.info('[图生] Step3.5 已有 polished_prompt，跳过重复优化', { id: imageGenId, len: finalPrompt.length, elapsed: elapsed() });
+          }
+        }
+
+        // 只要系统中有任意可用的文本模型配置，均执行优化（image_polish 专用映射为可选增强）
+        const anyTextConfig = !alreadyPolished && db.prepare(
+          "SELECT id FROM ai_service_configs WHERE service_type = 'text' AND deleted_at IS NULL LIMIT 1"
+        ).get();
+        if (anyTextConfig) {
           log.info('[图生] Step3.5 文本AI优化 prompt 开始', { id: imageGenId, elapsed: elapsed() });
           const style = cfg?.style?.default_style || '';
-          const assetNames = (reference_context_note || '').split('\n').map((l) => l.replace(/^Image \d+: [^"]*"([^"]+)".*/, '$1')).filter(Boolean).join(', ');
-          const userPrompt = `PROMPT: ${row.prompt}\nSTYLE: ${style || 'cinematic'}\nASSETS: ${assetNames || 'none'}`;
+          const assetNames = (reference_context_note || '').split('\n')
+            .map((l) => l.replace(/^Image \d+: [^"]*"([^"]+)".*/, '$1'))
+            .filter(Boolean).join(', ');
+
+          // 获取分镜详细字段（action / dialogue / result / atmosphere / shot_type）
+          let sbDetail = null;
+          try {
+            sbDetail = db.prepare(
+              'SELECT action, dialogue, result, atmosphere, shot_type, episode_id, storyboard_number FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+            ).get(Number(row.storyboard_id));
+          } catch (_) {}
+
+          // 查询前后镜头，用于连续性控制
+          let prevDesc = '(first shot)';
+          let nextDesc = '(last shot)';
+          let prevContinuityState = null; // 上一镜头的连戏状态快照
+          if (sbDetail?.episode_id != null && sbDetail?.storyboard_number != null) {
+            try {
+              const prevShot = db.prepare(
+                'SELECT action, location, time, continuity_snapshot FROM storyboards WHERE episode_id = ? AND storyboard_number < ? AND deleted_at IS NULL ORDER BY storyboard_number DESC LIMIT 1'
+              ).get(sbDetail.episode_id, sbDetail.storyboard_number);
+              const nextShot = db.prepare(
+                'SELECT action, location, time FROM storyboards WHERE episode_id = ? AND storyboard_number > ? AND deleted_at IS NULL ORDER BY storyboard_number ASC LIMIT 1'
+              ).get(sbDetail.episode_id, sbDetail.storyboard_number);
+              if (prevShot) {
+                prevDesc = (prevShot.action || [prevShot.location, prevShot.time].filter(Boolean).join(' ')).slice(0, 120).trim() || '(first shot)';
+                if (prevShot.continuity_snapshot) {
+                  try { prevContinuityState = JSON.parse(prevShot.continuity_snapshot); } catch (_) {}
+                }
+              }
+              if (nextShot) {
+                nextDesc = (nextShot.action || [nextShot.location, nextShot.time].filter(Boolean).join(' ')).slice(0, 120).trim() || '(last shot)';
+              }
+            } catch (_) {}
+          }
+
+          const userPromptLines = [
+            `PROMPT: ${row.prompt}`,
+            sbDetail?.action     ? `ACTION: ${sbDetail.action}`        : null,
+            sbDetail?.dialogue   ? `DIALOGUE: ${sbDetail.dialogue}`    : null,
+            sbDetail?.result     ? `RESULT: ${sbDetail.result}`        : null,
+            sbDetail?.atmosphere ? `ATMOSPHERE: ${sbDetail.atmosphere}`: null,
+            sbDetail?.shot_type  ? `SHOT_TYPE: ${sbDetail.shot_type}`  : null,
+            `STYLE: ${style || 'cinematic'}`,
+            `ASSETS: ${assetNames || 'none'}`,
+            prevContinuityState  ? `PREV_CONTINUITY_STATE: ${JSON.stringify(prevContinuityState)}` : null,
+            `CONTEXT_PREV: ${prevDesc}`,
+            `CONTEXT_NEXT: ${nextDesc}`,
+            `REMINDER: Output a STATIC SINGLE-FRAME image prompt only. No camera motion, no transitions, no split panels.`,
+          ].filter(Boolean);
+          const userPrompt = userPromptLines.join('\n');
           const systemPrompt = promptI18n.getImagePolishPrompt();
           const polishedPrompt = await aiClient.generateText(db, log, 'text', userPrompt, systemPrompt, {
             scene_key: 'image_polish',
@@ -812,20 +989,64 @@ async function processImageGeneration(db, log, imageGenId) {
           });
           if (polishedPrompt && polishedPrompt.trim().length > 10) {
             finalPrompt = polishedPrompt.trim();
+            const nowIso = new Date().toISOString();
             db.prepare('UPDATE image_generations SET prompt = ?, updated_at = ? WHERE id = ?').run(
-              finalPrompt, new Date().toISOString(), imageGenId
+              finalPrompt, nowIso, imageGenId
             );
+            // 回写到 storyboards.polished_prompt（原始 image_prompt 保持不变，供对比查看）
+            try {
+              db.prepare('UPDATE storyboards SET polished_prompt = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
+                finalPrompt, nowIso, Number(row.storyboard_id)
+              );
+            } catch (_) {}
             log.info('[图生] Step3.5 prompt 优化完成', {
               id: imageGenId,
               original_len: row.prompt.length,
               polished_len: finalPrompt.length,
+              has_prev_continuity: !!prevContinuityState,
+              prev_ctx: prevDesc.slice(0, 60),
+              next_ctx: nextDesc.slice(0, 60),
               preview: finalPrompt.slice(0, 100),
               elapsed: elapsed(),
             });
+
+            // 异步提取本镜头连戏状态快照，存入 continuity_snapshot（不阻塞图生主流程）
+            if (row.storyboard_id) {
+              const sbIdForCont = Number(row.storyboard_id);
+              const snapshotPrompt = promptI18n.getContinuitySnapshotPrompt();
+              const snapshotUserPrompt = [`PROMPT: ${finalPrompt}`, `ASSETS: ${assetNames || 'none'}`].join('\n');
+              aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
+                scene_key: 'image_polish',
+                max_tokens: 200,
+                temperature: 0.1,
+              }).then((snapshotJson) => {
+                if (!snapshotJson?.trim()) return;
+                // 清理可能的 markdown 代码块包裹
+                const cleaned = snapshotJson.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+                try {
+                  JSON.parse(cleaned); // 验证合法 JSON
+                  db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
+                    cleaned, new Date().toISOString(), sbIdForCont
+                  );
+                  log.info('[图生] Step3.5 连戏快照已保存', { id: imageGenId, storyboard_id: sbIdForCont });
+                } catch (_) {
+                  log.warn('[图生] Step3.5 连戏快照 JSON 解析失败，跳过', { id: imageGenId, preview: cleaned.slice(0, 100) });
+                }
+              }).catch(() => {});
+            }
           }
         }
       } catch (polishErr) {
         log.warn('[图生] Step3.5 prompt 优化失败，使用原始 prompt', { id: imageGenId, error: polishErr.message });
+      }
+    }
+
+    // ── Step 3.8: 单帧分镜注入防分割指令 ──────────────────────────────
+    // 当有多张参考图时，部分模型（如 Doubao）会生成左右分栏/对比布局，加入负面约束抑制该行为
+    if (isSingleStoryboard && reference_image_urls && reference_image_urls.length > 1) {
+      const antiSplitSuffix = ', single continuous scene, no split panels, no side-by-side layout, no collage';
+      if (!finalPrompt.includes('no split')) {
+        finalPrompt = finalPrompt.trimEnd() + antiSplitSuffix;
       }
     }
 
@@ -973,6 +1194,63 @@ function upload(db, log, req) {
   return row ? rowToItem(row) : null;
 }
 
+/**
+ * 纯文本字符匹配：扫描分镜文本字段，补全 storyboards.characters 中漏掉的角色。
+ * 无 AI 调用，速度极快，可在分镜生成后批量调用。
+ * @param {object} db
+ * @param {object} log
+ * @param {number} storyboardId
+ * @returns {{ added: string[] }} 本次新增的角色名列表
+ */
+function syncStoryboardCharacters(db, log, storyboardId) {
+  const added = [];
+  try {
+    const sb = db.prepare(
+      'SELECT id, episode_id, characters, action, dialogue, result, description FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+    ).get(Number(storyboardId));
+    if (!sb) return { added };
+
+    // 获取剧集对应的 drama_id
+    let dramaId = null;
+    try {
+      const ep = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(sb.episode_id);
+      dramaId = ep?.drama_id ?? null;
+    } catch (_) {}
+    if (!dramaId) return { added };
+
+    // 构造扫描文本
+    const scanText = [sb.action, sb.dialogue, sb.result, sb.description].filter(Boolean).join(' ').toLowerCase();
+    if (!scanText) return { added };
+
+    // 解析已关联角色
+    let charList = [];
+    try { charList = JSON.parse(sb.characters || '[]'); } catch (_) { charList = []; }
+    const coveredIds = new Set(charList.map((c) => Number(typeof c === 'object' && c != null ? c.id : c)));
+
+    // 与剧集全角色做文本匹配
+    const allChars = db.prepare('SELECT id, name FROM characters WHERE drama_id = ? AND deleted_at IS NULL').all(Number(dramaId));
+    let updated = false;
+    for (const ch of allChars) {
+      if (!ch.name) continue;
+      if (coveredIds.has(ch.id)) continue;
+      if (!scanText.includes(ch.name.toLowerCase())) continue;
+      charList.push({ id: ch.id, name: ch.name });
+      coveredIds.add(ch.id);
+      added.push(ch.name);
+      updated = true;
+    }
+
+    if (updated) {
+      db.prepare('UPDATE storyboards SET characters = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
+        .run(JSON.stringify(charList), new Date().toISOString(), Number(storyboardId));
+      if (log) log.info('[分镜角色补全] 补全完成', { storyboard_id: storyboardId, added });
+    }
+  } catch (err) {
+    if (log) log.warn('[分镜角色补全] 异常', { storyboard_id: storyboardId, error: err.message });
+  }
+  return { added };
+}
+
 module.exports = {
   list,
   getById,
@@ -982,4 +1260,5 @@ module.exports = {
   upload,
   processImageGeneration,
   aspectRatioToSize,
+  syncStoryboardCharacters,
 };

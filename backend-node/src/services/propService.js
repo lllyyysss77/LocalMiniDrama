@@ -24,8 +24,8 @@ function create(db, log, req) {
   const now = new Date().toISOString();
   const episodeId = req.episode_id != null ? Number(req.episode_id) : null;
   const info = db.prepare(
-    `INSERT INTO props (drama_id, episode_id, name, type, description, prompt, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO props (drama_id, episode_id, name, type, description, prompt, image_url, local_path, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     req.drama_id,
     episodeId,
@@ -33,6 +33,8 @@ function create(db, log, req) {
     req.type ?? null,
     req.description ?? null,
     req.prompt ?? null,
+    req.image_url ?? null,
+    req.local_path ?? null,
     now,
     now
   );

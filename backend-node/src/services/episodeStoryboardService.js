@@ -2,6 +2,7 @@
 const taskService = require('./taskService');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
+const { syncStoryboardCharacters } = require('./imageService');
 const { safeParseAIJSON, extractJsonCandidate, repairTruncatedJsonArray, extractFirstArray } = require('../utils/safeJson');
 const loadConfig = require('../config').loadConfig;
 const angleService = require('./angleService');
@@ -184,6 +185,8 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now) {
   const shotType = sb.shot_type ?? '';
   const movement = sb.movement ?? sb.camera_movement ?? '';
   const angle = sb.angle ?? sb.camera_angle ?? null;
+  const lightingStyle = sb.lighting_style ?? null;
+  const depthOfField = sb.depth_of_field ?? null;
   const action = sb.action ?? '';
   const dialogue = sb.dialogue ?? '';
   const result = sb.result ?? '';
@@ -215,15 +218,15 @@ function insertOneStoryboard(db, episodeIdNum, sb, style, videoRatio, now) {
   const charactersJson = Array.isArray(sb.characters) ? JSON.stringify(sb.characters) : (sb.characters ? JSON.stringify([].concat(sb.characters)) : '[]');
   try {
     db.prepare(
-      `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, segment_index, segment_title, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+      `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, segment_index, segment_title, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
     ).run(
       episodeIdNum, sceneId, shotNumber, title || null, description,
       sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
       dialogue || null, action || null, result || null, sb.atmosphere ?? null,
       imagePrompt, videoPrompt, charactersJson,
       shotType || null, angle, angleH, angleV, angleS,
-      movement || null, segmentIndex, segmentTitle, now, now
+      movement || null, lightingStyle, depthOfField, segmentIndex, segmentTitle, now, now
     );
     const newId = db.prepare('SELECT last_insert_rowid() as id').get().id;
     // 保存道具关联（AI 输出的 props 字段为道具 ID 数组）
@@ -345,6 +348,8 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
     const emotion = sb.emotion ?? '';
     const segmentIndex = sb.segment_index != null ? Number(sb.segment_index) : 0;
     const segmentTitle = sb.segment_title ?? null;
+    const lightingStyle = sb.lighting_style ?? null;
+    const depthOfField = sb.depth_of_field ?? null;
     // scene_description 向后兼容（旧版 AI 输出合并字段，尝试拆分为 location+time）
     if (!sb.location && sb.scene_description) {
       const sceneDesc = String(sb.scene_description).trim();
@@ -370,15 +375,15 @@ function saveStoryboards(db, log, episodeId, storyboards, cfg, styleOverride, sk
 
     try {
       db.prepare(
-        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, segment_index, segment_title, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, duration, dialogue, action, result, atmosphere, image_prompt, video_prompt, characters, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, segment_index, segment_title, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
       ).run(
         episodeIdNum, sceneId, shotNumber, title || null, description,
         sb.location ?? null, sb.time ?? null, sb.duration ?? 5,
         dialogue || null, action || null, result || null, sb.atmosphere ?? null,
         imagePrompt, videoPrompt, charactersJson,
         shotType || null, angle, angleH, angleV, angleS,
-        movement || null, segmentIndex, segmentTitle,
+        movement || null, lightingStyle, depthOfField, segmentIndex, segmentTitle,
         now, now
       );
     } catch (e) {
@@ -666,6 +671,18 @@ async function processStoryboardGeneration(db, log, cfg, taskId, episodeId, mode
 
     // 传入 streamSavedNums：已增量保存的项目直接从 DB 读取，跳过重复 INSERT
     const saved = saveStoryboards(db, log, episodeId, storyboards, cfg, style, streamSavedNums);
+
+    // ── 分镜角色补全（字符串匹配，无 AI，极快）──────────────────────────────────
+    taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在校验分镜角色关联...');
+    let totalCharAdded = 0;
+    for (const sb of saved) {
+      if (!sb?.id) continue;
+      const { added } = syncStoryboardCharacters(db, log, sb.id);
+      totalCharAdded += added.length;
+    }
+    if (totalCharAdded > 0) {
+      log.info('[分镜] 角色补全完成', { episode_id: episodeId, total_added: totalCharAdded });
+    }
 
     taskService.updateTaskStatus(db, taskId, 'processing', 90, '正在更新剧集时长...');
 

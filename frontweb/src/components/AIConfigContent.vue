@@ -932,6 +932,7 @@ const providerConfigs = {
   ],
   image: [
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
+    { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
@@ -942,12 +943,14 @@ const providerConfigs = {
   storyboard_image: [
     { id: 'dashscope', name: '通义万象', models: ['wan2.6-image', 'qwen-image-edit-plus-2026-01-09', 'qwen-image-edit-plus', 'qwen-image-edit-max'] },
     { id: 'volcengine', name: '火山引擎', models: ['doubao-seedream-4-5-251128', 'doubao-seedream-4-0-250828'] },
+    { id: 'kling', name: '可灵 Kling', models: ['kling-image', 'kling-omni-image'] },
     { id: 'nano_banana', name: 'NanoBanana', models: ['nano-banana-2', 'nano-banana-pro', 'nano-banana'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['nano-banana-pro', 'doubao-seedream-4-5-251128', 'qwen-image'] },
     { id: 'gemini', name: 'Google Gemini', models: ['gemini-2.5-flash-image', 'gemini-2.5-flash-image-preview', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'] },
     { id: 'openai', name: 'OpenAI', models: ['dall-e-3', 'dall-e-2'] }
   ],
   video: [
+    { id: 'kling', name: '可灵 Kling', models: ['kling-omni-video', 'kling-video', 'kling-motion-control'] },
     { id: 'vidu', name: 'Vidu', models: ['viduq2', 'viduq2-pro', 'viduq2-turbo', 'viduq3-pro'] },
     { id: 'volces', name: '火山引擎', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'sora-2', 'sora-2-pro'] },
@@ -969,6 +972,8 @@ const providerProtocolMap = {
   qwen_image: 'dashscope',
   gemini: 'gemini',
   google: 'gemini',
+  kling: 'kling',
+  klingai: 'kling',
   // video
   vidu: 'vidu',
   minimax: 'openai',
@@ -992,6 +997,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'qwen') return 'https://dashscope.aliyuncs.com/compatible-mode/v1'
   if (p === 'nano_banana') return 'https://api.nanobananaapi.ai'
   if (p === 'vidu') return 'https://api.vidu.cn'
+  if (p === 'kling' || p === 'klingai') return 'https://api.klingai.com'
   return 'https://api.chatfire.site/v1'
 }
 
@@ -1044,6 +1050,8 @@ const endpointPreviewInfo = computed(() => {
       return { submit: base + submitPath, query: null, isAuto: true, isGemini: true }
     } else if (proto === 'nano_banana' || p === 'nano_banana') {
       submitPath = '/v1/images/generations'  // nano_banana base_url 无 /v1
+    } else if (proto === 'kling' || p === 'kling' || p === 'klingai') {
+      submitPath = '/v1/images/generations'
     } else {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
@@ -1068,6 +1076,8 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/v1/videos'
     } else if (proto === 'veo3') {
       submitPath = '/v1/video/create'
+    } else if (proto === 'kling' || p === 'kling' || p === 'klingai') {
+      submitPath = '/v1/videos/text2video (T2V) 或 /v1/videos/image2video (I2V)'
     } else if (p === 'minimax') {
       submitPath = '/video_generation'  // minimax base_url 已含 /v1
     } else {
@@ -1086,6 +1096,8 @@ const endpointPreviewInfo = computed(() => {
       queryPath = '/v1/videos/{taskId}'
     } else if (proto === 'veo3') {
       queryPath = '/v1/video/query?id={taskId}'
+    } else if (proto === 'kling' || p === 'kling' || p === 'klingai') {
+      queryPath = '/v1/videos/{videoType}/{taskId}（自动按任务类型选择）'
     } else if (p === 'minimax') {
       queryPath = '/query/video_generation?task_id={taskId}'  // minimax base_url 已含 /v1
     } else if (proto !== 'gemini' && p !== 'gemini') {

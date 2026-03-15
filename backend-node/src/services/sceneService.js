@@ -40,48 +40,39 @@ function deleteScene(db, log, sceneId) {
 
 function createScene(db, log, dramaId, req) {
   const now = new Date().toISOString();
-  const info = db.prepare(
-    `INSERT INTO scenes (drama_id, location, time, prompt, storyboard_count, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 1, 'pending', ?, ?)`
-  ).run(
-    Number(dramaId),
-    req.location || '',
-    req.time || '',
-    req.prompt || '',
-    now,
-    now
-  );
-  log.info('Scene created', { scene_id: info.lastInsertRowid, drama_id: dramaId });
-  return getSceneById(db, info.lastInsertRowid);
-}
-
-function createSceneForEpisode(db, log, dramaId, episodeId, req) {
-  const now = new Date().toISOString();
+  const episodeId = req.episode_id != null ? Number(req.episode_id) : null;
   try {
     const info = db.prepare(
-      `INSERT INTO scenes (drama_id, episode_id, location, time, prompt, storyboard_count, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
+      `INSERT INTO scenes (drama_id, episode_id, location, time, prompt, image_url, local_path, storyboard_count, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
     ).run(
       Number(dramaId),
-      Number(episodeId),
+      episodeId,
       req.location || '',
       req.time || '',
       req.prompt || '',
+      req.image_url ?? null,
+      req.local_path ?? null,
       now,
       now
     );
-    log.info('Scene created for episode', { scene_id: info.lastInsertRowid, episode_id: episodeId });
+    log.info('Scene created', { scene_id: info.lastInsertRowid, drama_id: dramaId, episode_id: episodeId });
     return getSceneById(db, info.lastInsertRowid);
   } catch (e) {
+    // 老库可能没有 episode_id 列，降级为不含 episode_id 的 INSERT
     if ((e.message || '').includes('episode_id')) {
       const info = db.prepare(
-        `INSERT INTO scenes (drama_id, location, time, prompt, storyboard_count, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 1, 'pending', ?, ?)`
-      ).run(Number(dramaId), req.location || '', req.time || '', req.prompt || '', now, now);
+        `INSERT INTO scenes (drama_id, location, time, prompt, image_url, local_path, storyboard_count, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 'pending', ?, ?)`
+      ).run(Number(dramaId), req.location || '', req.time || '', req.prompt || '', req.image_url ?? null, req.local_path ?? null, now, now);
       return getSceneById(db, info.lastInsertRowid);
     }
     throw e;
   }
+}
+
+function createSceneForEpisode(db, log, dramaId, episodeId, req) {
+  return createScene(db, log, dramaId, { ...req, episode_id: episodeId });
 }
 
 function deleteScenesByEpisodeId(db, log, episodeId) {

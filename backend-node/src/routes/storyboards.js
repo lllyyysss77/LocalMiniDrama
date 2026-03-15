@@ -2,6 +2,9 @@ const response = require('../response');
 const storyboardService = require('../services/storyboardService');
 const episodeStoryboardService = require('../services/episodeStoryboardService');
 const framePromptService = require('../services/framePromptService');
+const aiClient = require('../services/aiClient');
+const promptI18n = require('../services/promptI18n');
+const angleService = require('../services/angleService');
 
 function routes(db, log) {
   return {
@@ -11,6 +14,26 @@ function routes(db, log) {
         response.created(res, sb);
       } catch (err) {
         log.error('storyboards create', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    insertBefore: (req, res) => {
+      try {
+        const sb = storyboardService.insertBeforeStoryboard(db, log, req.params.id);
+        if (!sb) return response.notFound(res, '目标分镜不存在');
+        response.created(res, sb);
+      } catch (err) {
+        log.error('storyboards insertBefore', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+    getOne: (req, res) => {
+      try {
+        const sb = storyboardService.getStoryboardById(db, req.params.id);
+        if (!sb) return response.notFound(res, '分镜不存在');
+        response.success(res, sb);
+      } catch (err) {
+        log.error('storyboards getOne', { error: err.message });
         response.internalError(res, err.message);
       }
     },
@@ -84,6 +107,182 @@ function routes(db, log) {
         response.success(res, { storyboards: list, total: list.length });
       } catch (err) {
         log.error('episode storyboards get', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+
+    // 独立触发单条分镜的 image prompt 优化，结果保存到 storyboards.polished_prompt 并返回
+    polishPrompt: async (req, res) => {
+      try {
+        const sbId = Number(req.params.id);
+        const sb = db.prepare(
+          'SELECT id, episode_id, storyboard_number, image_prompt, action, dialogue, result, atmosphere, shot_type FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+        ).get(sbId);
+        if (!sb) return response.notFound(res, '分镜不存在');
+        if (!sb.image_prompt && !sb.action && !sb.dialogue) {
+          return response.badRequest(res, '该分镜暂无可优化的内容（image_prompt / action / dialogue 均为空）');
+        }
+
+        // 通过 episode 查 drama_id
+        let dramaId = null;
+        try {
+          const ep = db.prepare('SELECT drama_id FROM episodes WHERE id = ? AND deleted_at IS NULL').get(sb.episode_id);
+          dramaId = ep?.drama_id ?? null;
+        } catch (_) {}
+
+        // 获取风格配置
+        let style = '';
+        try {
+          const loadConfig = require('../config').loadConfig;
+          const cfg = loadConfig();
+          style = cfg?.style?.default_style || '';
+        } catch (_) {}
+
+        // 获取前后镜头上下文（含上一镜头连戏状态快照）
+        let prevDesc = '(first shot)';
+        let nextDesc = '(last shot)';
+        let prevContinuityState = null;
+        if (sb.episode_id != null && sb.storyboard_number != null) {
+          const prevShot = db.prepare(
+            'SELECT action, location, time, continuity_snapshot FROM storyboards WHERE episode_id = ? AND storyboard_number < ? AND deleted_at IS NULL ORDER BY storyboard_number DESC LIMIT 1'
+          ).get(sb.episode_id, sb.storyboard_number);
+          const nextShot = db.prepare(
+            'SELECT action, location, time FROM storyboards WHERE episode_id = ? AND storyboard_number > ? AND deleted_at IS NULL ORDER BY storyboard_number ASC LIMIT 1'
+          ).get(sb.episode_id, sb.storyboard_number);
+          if (prevShot) {
+            prevDesc = (prevShot.action || [prevShot.location, prevShot.time].filter(Boolean).join(' ')).slice(0, 120).trim() || '(first shot)';
+            if (prevShot.continuity_snapshot) {
+              try { prevContinuityState = JSON.parse(prevShot.continuity_snapshot); } catch (_) {}
+            }
+          }
+          if (nextShot) nextDesc = (nextShot.action || [nextShot.location, nextShot.time].filter(Boolean).join(' ')).slice(0, 120).trim() || '(last shot)';
+        }
+
+        // 获取该分镜实际关联的角色名（优先 storyboards.characters JSON，其次 storyboard_characters 表）
+        let assetNames = '';
+        try {
+          const nameSet = new Set();
+          // 来源1：storyboards.characters JSON（[{id,name}] 或 [id, ...]）
+          const sbFull = db.prepare('SELECT characters FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(sbId);
+          if (sbFull?.characters) {
+            const parsed = JSON.parse(sbFull.characters);
+            if (Array.isArray(parsed)) {
+              for (const item of parsed) {
+                const cid = typeof item === 'object' && item != null ? item.id : item;
+                const c = db.prepare('SELECT name FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(cid));
+                if (c?.name) nameSet.add(c.name);
+              }
+            }
+          }
+          // 来源2：storyboard_characters 关联表（character_libraries）
+          const libLinks = db.prepare('SELECT character_id FROM storyboard_characters WHERE storyboard_id = ?').all(sbId);
+          for (const link of libLinks) {
+            const lib = db.prepare('SELECT name FROM character_libraries WHERE id = ? AND deleted_at IS NULL').get(link.character_id);
+            if (lib?.name) nameSet.add(lib.name);
+          }
+          assetNames = [...nameSet].join(', ');
+        } catch (_) {}
+
+        const userPromptLines = [
+          sb.image_prompt  ? `PROMPT: ${sb.image_prompt}`    : null,
+          sb.action        ? `ACTION: ${sb.action}`          : null,
+          sb.dialogue      ? `DIALOGUE: ${sb.dialogue}`      : null,
+          sb.result        ? `RESULT: ${sb.result}`          : null,
+          sb.atmosphere    ? `ATMOSPHERE: ${sb.atmosphere}`  : null,
+          sb.shot_type     ? `SHOT_TYPE: ${sb.shot_type}`    : null,
+          `STYLE: ${style || 'cinematic'}`,
+          `ASSETS: ${assetNames || 'none'}`,
+          prevContinuityState ? `PREV_CONTINUITY_STATE: ${JSON.stringify(prevContinuityState)}` : null,
+          `CONTEXT_PREV: ${prevDesc}`,
+          `CONTEXT_NEXT: ${nextDesc}`,
+          `REMINDER: Output a STATIC SINGLE-FRAME image prompt only. No camera motion, no transitions, no split panels.`,
+        ].filter(Boolean);
+
+        const polishedPrompt = await aiClient.generateText(
+          db, log, 'text', userPromptLines.join('\n'), promptI18n.getImagePolishPrompt(),
+          { scene_key: 'image_polish', max_tokens: 300, temperature: 0.3 }
+        );
+
+        if (!polishedPrompt || polishedPrompt.trim().length < 10) {
+          return response.badRequest(res, 'AI 返回内容过短，请检查文本模型配置');
+        }
+
+        const polished = polishedPrompt.trim();
+        const nowIso = new Date().toISOString();
+        db.prepare('UPDATE storyboards SET polished_prompt = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
+          polished, nowIso, sbId
+        );
+        log.info('[分镜] polishPrompt 完成', { id: sbId, len: polished.length, has_prev_continuity: !!prevContinuityState });
+
+        // 异步提取连戏状态快照并保存（不阻塞响应）
+        const snapshotPrompt = promptI18n.getContinuitySnapshotPrompt();
+        const snapshotUserPrompt = [`PROMPT: ${polished}`, `ASSETS: ${assetNames || 'none'}`].join('\n');
+        aiClient.generateText(db, log, 'text', snapshotUserPrompt, snapshotPrompt, {
+          scene_key: 'image_polish', max_tokens: 200, temperature: 0.1,
+        }).then((snapshotJson) => {
+          if (!snapshotJson?.trim()) return;
+          const cleaned = snapshotJson.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+          try {
+            JSON.parse(cleaned);
+            db.prepare('UPDATE storyboards SET continuity_snapshot = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL').run(
+              cleaned, new Date().toISOString(), sbId
+            );
+            log.info('[分镜] polishPrompt 连戏快照已保存', { id: sbId });
+          } catch (_) {}
+        }).catch(() => {});
+
+        response.success(res, { polished_prompt: polished });
+      } catch (err) {
+        log.error('storyboards polishPrompt', { error: err.message });
+        response.internalError(res, err.message);
+      }
+    },
+
+    // 批量推断摄影参数（movement/lighting_style/depth_of_field）
+    // 对 episode 下所有缺少这些字段的分镜进行快速文本推断，不调用 AI，毫秒级完成
+    batchInferParams: (req, res) => {
+      try {
+        const episodeId = Number(req.body?.episode_id);
+        const overwrite = !!req.body?.overwrite; // 是否覆盖已有值
+        if (!episodeId) return response.badRequest(res, 'episode_id 必填');
+
+        const rows = db.prepare(
+          'SELECT id, angle_s, shot_type, atmosphere, time, description, action, movement, lighting_style, depth_of_field FROM storyboards WHERE episode_id = ? AND deleted_at IS NULL ORDER BY storyboard_number ASC'
+        ).all(episodeId);
+
+        let updated = 0;
+        const now = new Date().toISOString();
+        const stmt = db.prepare(
+          'UPDATE storyboards SET movement = COALESCE(?, movement), lighting_style = COALESCE(?, lighting_style), depth_of_field = COALESCE(?, depth_of_field), updated_at = ? WHERE id = ?'
+        );
+        const stmtOverwrite = db.prepare(
+          'UPDATE storyboards SET movement = ?, lighting_style = ?, depth_of_field = ?, updated_at = ? WHERE id = ?'
+        );
+
+        for (const row of rows) {
+          const inferred = angleService.inferPhotographyParams(row);
+          // 只更新缺少的字段（除非 overwrite=true）
+          const newMovement   = overwrite ? inferred.movement   : (row.movement      ? null : inferred.movement);
+          const newLighting   = overwrite ? inferred.lighting_style : (row.lighting_style ? null : inferred.lighting_style);
+          const newDof        = overwrite ? inferred.depth_of_field : (row.depth_of_field  ? null : inferred.depth_of_field);
+
+          if (overwrite) {
+            if (inferred.movement || inferred.lighting_style || inferred.depth_of_field) {
+              stmtOverwrite.run(inferred.movement, inferred.lighting_style, inferred.depth_of_field, now, row.id);
+              updated++;
+            }
+          } else {
+            if (newMovement || newLighting || newDof) {
+              stmt.run(newMovement, newLighting, newDof, now, row.id);
+              updated++;
+            }
+          }
+        }
+
+        log.info('[分镜] batchInferParams 完成', { episode_id: episodeId, total: rows.length, updated, overwrite });
+        response.success(res, { total: rows.length, updated });
+      } catch (err) {
+        log.error('storyboards batchInferParams', { error: err.message });
         response.internalError(res, err.message);
       }
     },

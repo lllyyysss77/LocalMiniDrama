@@ -7,6 +7,9 @@ const uploadService = require('./uploadService');
 const taskService = require('./taskService');
 const { loadConfig } = require('../config');
 
+// 多参考图时注入到所有支持 negative_prompt 的模型，防止生成分割/拼贴布局
+const ANTI_SPLIT_NEGATIVE_PROMPT = 'split panels, side-by-side layout, collage, diptych, triptych, grid layout, multiple panels, comparison view, composite image, two images in one frame';
+
 // sharp 惰性加载（参考图压缩用，sharp 已在 package.json 中声明）
 let _sharp = null;
 function getSharp() {
@@ -72,6 +75,8 @@ function inferProtocol(provider, model) {
   if (p === 'gemini' || p === 'google') return 'gemini';
   if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
   if (/seedream|doubao/i.test(model || '')) return 'volcengine';
+  if (p === 'kling' || p === 'klingai') return 'kling';
+  if (/^kling-/i.test(model || '')) return 'kling';
   return 'openai';
 }
 
@@ -209,6 +214,157 @@ function nanoBananaAspectRatio(size) {
   if (r >= 0.7) return '3:4';
   if (r >= 0.55) return '4:5';
   return '9:16';
+}
+
+// 可灵 aspect_ratio：16:9 / 9:16 / 1:1 / 4:3 / 3:4 / 3:2 / 2:3
+function klingImageAspectRatio(size) {
+  if (!size) return '16:9';
+  const s = String(size).trim().toLowerCase().replace(/\s/g, '');
+  const ratioSet = new Set(['16:9', '9:16', '1:1', '4:3', '3:4', '3:2', '2:3']);
+  if (ratioSet.has(s)) return s;
+  const match = s.match(/^(\d+)[x*](\d+)$/);
+  if (!match) return '1:1';
+  const w = parseInt(match[1], 10);
+  const h = parseInt(match[2], 10);
+  if (!w || !h) return '1:1';
+  const r = w / h;
+  if (r >= 1.6) return '16:9';
+  if (r >= 1.2) return '4:3';
+  if (r >= 0.9) return '1:1';
+  if (r >= 0.7) return '3:4';
+  return '9:16';
+}
+
+/**
+ * 调用可灵（Kling AI）图片生成 API（异步任务轮询）
+ * 支持模型：kling-image / kling-omni-image（以及其他 kling-* 模型）
+ * 接口规范：POST /v1/images/generations → 轮询 GET /v1/images/generations/{taskId}
+ * 认证：Authorization: Bearer {api_key}
+ */
+async function callKlingImageApi(config, log, opts) {
+  const { prompt, model, size, image_gen_id, reference_image_urls, files_base_url, storage_local_path } = opts;
+  const base = (config.base_url || 'https://api.klingai.com').replace(/\/$/, '');
+  const apiKey = config.api_key || '';
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: 'Bearer ' + apiKey,
+  };
+
+  let ep = config.endpoint || '/v1/images/generations';
+  if (!ep.startsWith('/')) ep = '/' + ep;
+  const submitUrl = base + ep;
+
+  const aspectRatio = klingImageAspectRatio(size);
+  const m = model || 'kling-image';
+
+  const rawRefs = Array.isArray(reference_image_urls) ? reference_image_urls.filter(Boolean) : [];
+  const resolvedRefs = rawRefs.map((r) => resolveImageRef(r, files_base_url, storage_local_path)).filter(Boolean);
+
+  const body = {
+    model: m,
+    prompt: prompt || '',
+    aspect_ratio: aspectRatio,
+    n: 1,
+    callback_url: '',
+  };
+
+  if (resolvedRefs.length > 0) {
+    // 可灵 image_reference 支持 subject（人物/主体）和 face（面部）类型
+    body.image_reference = resolvedRefs.slice(0, 1).map((url) => ({ type: 'subject', url }));
+    body.image_fidelity = 0.5;
+  }
+
+  const bodyForLog = { ...body };
+  if (Array.isArray(bodyForLog.image_reference)) {
+    bodyForLog.image_reference = bodyForLog.image_reference.map((r) =>
+      r.url && r.url.startsWith('data:') ? { ...r, url: '(base64)' } : r
+    );
+  }
+  log.info('[Kling图生] 发送请求', {
+    url: submitUrl, model: m, image_gen_id,
+    has_ref: resolvedRefs.length > 0,
+    aspect_ratio: aspectRatio,
+    body_preview: JSON.stringify(bodyForLog).slice(0, 300),
+  });
+
+  const submitRes = await fetch(submitUrl, { method: 'POST', headers, body: JSON.stringify(body) });
+  const submitRaw = await submitRes.text();
+
+  if (!submitRes.ok) {
+    let errMsg = 'Kling 图片生成请求失败: ' + submitRes.status;
+    try {
+      const errJson = JSON.parse(submitRaw);
+      const msg = errJson.message || errJson.msg || (errJson.error && (errJson.error.message || errJson.error));
+      if (msg) errMsg += ' - ' + String(msg).slice(0, 200);
+    } catch (_) {
+      if (submitRaw) errMsg += ' - ' + submitRaw.slice(0, 200);
+    }
+    log.error('[Kling图生] 请求失败', { status: submitRes.status, body: submitRaw.slice(0, 500), image_gen_id });
+    return { error: errMsg };
+  }
+
+  let submitData;
+  try {
+    submitData = JSON.parse(submitRaw);
+  } catch (e) {
+    return { error: 'Kling 返回格式异常: ' + submitRaw.slice(0, 200) };
+  }
+
+  if (submitData.code !== undefined && submitData.code !== 0) {
+    return { error: `Kling 错误(${submitData.code}): ${submitData.message || '未知错误'}` };
+  }
+
+  // 部分场景可能同步返回图片（兜底）
+  const directUrl = submitData?.data?.task_result?.images?.[0]?.url;
+  if (directUrl) {
+    log.info('[Kling图生] 同步返回图片', { image_gen_id });
+    return { image_url: directUrl };
+  }
+
+  const taskId = submitData?.data?.task_id;
+  if (!taskId) {
+    log.warn('[Kling图生] 未返回 task_id', { image_gen_id, raw_preview: submitRaw.slice(0, 300) });
+    return { error: 'Kling 未返回 task_id: ' + submitRaw.slice(0, 200) };
+  }
+
+  // 构建轮询 URL
+  const cfgQEp = config.query_endpoint
+    ? (config.query_endpoint.startsWith('/') ? config.query_endpoint : '/' + config.query_endpoint)
+    : '';
+  function buildKlingQueryUrl(tid) {
+    if (cfgQEp) return base + cfgQEp.replace(/\{taskId\}/gi, encodeURIComponent(tid)).replace(/\{task_id\}/gi, encodeURIComponent(tid));
+    return base + ep + '/' + encodeURIComponent(tid);
+  }
+
+  log.info('[Kling图生] 任务已提交，开始轮询', { image_gen_id, task_id: taskId });
+  const maxAttempts = 60;
+  const intervalMs = 4000;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    try {
+      const queryRes = await fetch(buildKlingQueryUrl(taskId), { method: 'GET', headers });
+      if (!queryRes.ok) continue;
+      const queryData = JSON.parse(await queryRes.text());
+      const status = queryData?.data?.task_status;
+      log.info('[Kling图生] 轮询状态', { image_gen_id, task_id: taskId, attempt, status });
+      if (status === 'succeed') {
+        const imgUrl = queryData?.data?.task_result?.images?.[0]?.url;
+        if (imgUrl) {
+          log.info('[Kling图生] 生成完成', { image_gen_id, task_id: taskId });
+          return { image_url: imgUrl };
+        }
+        return { error: '可灵未返回图片地址' };
+      }
+      if (status === 'failed') {
+        const errMsg = queryData?.data?.task_status_msg || '任务失败';
+        log.warn('[Kling图生] 任务失败', { image_gen_id, task_id: taskId, error: errMsg });
+        return { error: '可灵生成失败: ' + errMsg };
+      }
+    } catch (e) {
+      log.warn('[Kling图生] 轮询请求失败', { attempt, error: e.message, image_gen_id });
+    }
+  }
+  return { error: '可灵图片生成超时' };
 }
 
 /**
@@ -564,6 +720,8 @@ async function callDashScopeImageApi(config, log, opts) {
       enable_interleave: !hasRefs,
       size: dashScopeSize(size),
       stream,
+      // 多张参考图时注入 negative_prompt，防止生成分割/拼贴布局
+      ...(hasRefs ? { negative_prompt: negative_prompt || ANTI_SPLIT_NEGATIVE_PROMPT } : (negative_prompt ? { negative_prompt } : {})),
     },
   };
   const contentSummary = content.map((p) => (p.text != null ? 'text' : p.image && p.image.startsWith('data:') ? 'image(base64)' : 'image(url)'));
@@ -943,6 +1101,7 @@ async function callImageApi(db, log, opts) {
     reference_image_urls,
     files_base_url,
     storage_local_path,
+    system_prompt,
   } = opts;
   const preferredProvider = preferred_provider ?? opts.preferredProvider;
   const config = getDefaultImageConfig(db, preferredModel, preferredProvider, imageServiceType);
@@ -954,6 +1113,25 @@ async function callImageApi(db, log, opts) {
   // api_protocol 显式指定接口规范，优先级高于 provider 推断；未设置时按 provider 自动判断
   const protocol = (config.api_protocol || '').toLowerCase() || inferProtocol(provider, model);
 
+  // ── 参考图标签注入：为所有非 Gemini 模型将标签注入 prompt 文本 ─────────────────────────────
+  // Gemini 通过 parts 结构处理（interleaved text+image），不需要文字注入。
+  // 其他所有模型（Doubao/DashScope/NanoBanana/OpenAI-compat 等）通过文字告知模型各参考图用途，
+  // 避免模型模仿参考图的宫格/四视图布局，同时抑制生成分割画面。
+  let effectivePrompt = prompt || '';
+  if (
+    protocol !== 'gemini' &&
+    Array.isArray(reference_image_urls) && reference_image_urls.length > 0 &&
+    system_prompt
+  ) {
+    const refLines = String(system_prompt).split('\n').filter(l => /^Image\s+\d+:/i.test(l));
+    if (refLines.length > 0) {
+      const refHeader = refLines
+        .map(l => `[${l} — FOR REFERENCE ONLY, DO NOT copy its layout or framing]`)
+        .join('\n');
+      effectivePrompt = `${refHeader}\n\n[GENERATE THIS SCENE — single continuous image, no grid, no split panels]:\n${effectivePrompt}`;
+    }
+  }
+
   log.info('[图生] callImageApi 路由', {
     image_gen_id,
     protocol,
@@ -963,20 +1141,36 @@ async function callImageApi(db, log, opts) {
     size,
     imageServiceType,
     ref_count: Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.length : 0,
+    ref_label_injected: effectivePrompt !== (prompt || ''),
+    effectivePrompt
   });
+
+  // 多参考图时统一生成 negative_prompt（供各子函数使用）
+  const refCountForNeg = Array.isArray(opts.reference_image_urls) ? opts.reference_image_urls.filter(Boolean).length : 0;
+  const autoNegativePrompt = refCountForNeg > 1 ? ANTI_SPLIT_NEGATIVE_PROMPT : '';
 
   if (protocol === 'dashscope') {
     return callDashScopeImageApi(config, log, {
-      prompt, model, size, image_gen_id,
+      prompt: effectivePrompt, model, size, image_gen_id,
+      reference_image_urls: opts.reference_image_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      negative_prompt: autoNegativePrompt,
+    });
+  }
+
+  if (protocol === 'nano_banana') {
+    return callNanoBananaImageApi(config, log, {
+      prompt: effectivePrompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
     });
   }
 
-  if (protocol === 'nano_banana') {
-    return callNanoBananaImageApi(config, log, {
-      prompt, model, size, image_gen_id,
+  if (protocol === 'kling') {
+    return callKlingImageApi(config, log, {
+      prompt: effectivePrompt, model, size, image_gen_id,
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
@@ -985,7 +1179,7 @@ async function callImageApi(db, log, opts) {
 
   if (protocol === 'gemini') {
     return callGeminiImageApi(db, config, log, {
-      prompt, model, size, image_gen_id,
+      prompt, model, size, image_gen_id,          // Gemini 用原始 prompt，不注入文字标签
       reference_image_urls: opts.reference_image_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
@@ -1007,15 +1201,19 @@ async function callImageApi(db, log, opts) {
       ref_types: resolvedRefs.map((r) => (r.startsWith('data:') ? 'base64' : 'url')),
     });
   }
+
   const body = {
     model,
-    prompt: prompt || '',
+    prompt: effectivePrompt,
     // doubao-seedream API 不使用 n，其他 OpenAI 兼容接口保留
     ...(!isSeedream ? { n: 1 } : {}),
     ...(size ? { size } : {}),
     ...(quality ? { quality } : {}),
     // volcengine 原生或 doubao-seedream 模型均需关闭水印（默认为 true）
     ...((isVolc || isSeedream) ? { watermark: false } : {}),
+    // 多张参考图时加 negative_prompt，防止模型把参考图拼成左右分割的合图
+    // Doubao/Seedream 原生支持；通用 OpenAI-compat 接口大多也会接受该字段（不支持的会忽略）
+    ...(resolvedRefs.length > 1 ? { negative_prompt: autoNegativePrompt } : {}),
     // 参考图字段：volcengine doubao-seedream API 规范使用 image（数组），见官方文档
     ...(resolvedRefs.length > 0 ? { image: resolvedRefs } : {}),
   };

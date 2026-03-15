@@ -152,12 +152,18 @@ function ensureAllColumns(database) {
     { name: 'video_url',         type: 'TEXT' },
     { name: 'composed_image',    type: 'TEXT' },
     { name: 'result',            type: 'TEXT' },
+    { name: 'emotion',           type: 'TEXT' },               // 当前情绪（兴奋/悲伤/紧张等）
+    { name: 'emotion_intensity', type: 'INTEGER' },            // 情绪强度 3/2/1/0/-1
     { name: 'error_msg',         type: 'TEXT' },
     { name: 'segment_index',     type: 'INTEGER DEFAULT 0' },  // 剧情段落索引（0-based）
     { name: 'segment_title',     type: 'TEXT' },               // 剧情段落名称
     { name: 'angle_h',           type: 'TEXT' },               // 水平方向（front/left/back/right...）
     { name: 'angle_v',           type: 'TEXT' },               // 俯仰角度（worm/low/eye_level/high）
     { name: 'angle_s',           type: 'TEXT' },               // 景别（close_up/medium/wide）
+    { name: 'lighting_style',    type: 'TEXT' },               // 灯光风格（natural/side/dramatic/golden_hour 等）
+    { name: 'depth_of_field',    type: 'TEXT' },               // 景深（shallow/medium/deep/extreme_shallow）
+    { name: 'polished_prompt',        type: 'TEXT' },               // 文字AI润色后的图片生成提示词（可编辑，生图时优先使用）
+    { name: 'continuity_snapshot',   type: 'TEXT' },               // JSON: 连戏状态快照 {characters:{name:{position,clothing,expression,props}},lighting}
     { name: 'status',            type: 'TEXT DEFAULT \'draft\'' },
     { name: 'created_at',        type: 'TEXT' },
     { name: 'updated_at',        type: 'TEXT' },

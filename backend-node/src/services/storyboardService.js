@@ -31,7 +31,7 @@ function createStoryboard(db, log, req) {
 function updateStoryboard(db, log, id, req) {
   const row = db.prepare('SELECT id FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(Number(id));
   if (!row) return null;
-  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'action', 'result', 'atmosphere', 'image_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title'];
+  const allowed = ['title', 'description', 'location', 'time', 'duration', 'dialogue', 'action', 'result', 'atmosphere', 'image_prompt', 'polished_prompt', 'video_prompt', 'scene_id', 'characters', 'composed_image', 'image_url', 'local_path', 'main_panel_idx', 'video_url', 'status', 'shot_type', 'angle', 'angle_h', 'angle_v', 'angle_s', 'movement', 'segment_index', 'segment_title'];
   const updates = [];
   const params = [];
   // 前端可能传 character_ids，与 characters 统一：存为 JSON 字符串
@@ -101,6 +101,7 @@ function getStoryboardById(db, id) {
     result: r.result ?? null,
     atmosphere: r.atmosphere,
     image_prompt: r.image_prompt,
+    polished_prompt: r.polished_prompt ?? null,
     video_prompt: r.video_prompt,
     shot_type: r.shot_type,
     angle: r.angle,
@@ -160,8 +161,30 @@ function saveFramePrompt(db, log, storyboardId, frameType, prompt, description, 
   return getFramePrompts(db, storyboardId);
 }
 
+/** 在指定分镜前插入一个空白分镜：先把同 episode 中 number >= target 的全部 +1，再创建新分镜 */
+function insertBeforeStoryboard(db, log, targetId) {
+  const target = db.prepare(
+    'SELECT id, episode_id, storyboard_number, segment_index, segment_title FROM storyboards WHERE id = ? AND deleted_at IS NULL'
+  ).get(Number(targetId));
+  if (!target) return null;
+
+  db.prepare(
+    'UPDATE storyboards SET storyboard_number = storyboard_number + 1, updated_at = ? WHERE episode_id = ? AND storyboard_number >= ? AND deleted_at IS NULL'
+  ).run(new Date().toISOString(), target.episode_id, target.storyboard_number);
+
+  const now = new Date().toISOString();
+  const info = db.prepare(
+    `INSERT INTO storyboards (episode_id, storyboard_number, segment_index, segment_title, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'pending', ?, ?)`
+  ).run(target.episode_id, target.storyboard_number, target.segment_index ?? null, target.segment_title ?? null, now, now);
+
+  log.info('Storyboard inserted before', { new_id: info.lastInsertRowid, before_id: targetId });
+  return getStoryboardById(db, info.lastInsertRowid);
+}
+
 module.exports = {
   createStoryboard,
+  insertBeforeStoryboard,
   updateStoryboard,
   deleteStoryboard,
   getStoryboardById,

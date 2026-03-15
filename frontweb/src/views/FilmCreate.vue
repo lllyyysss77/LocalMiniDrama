@@ -220,9 +220,12 @@
             保存当前集
           </el-button>
         </div>
-        <!-- 一键全流程生成区 -->
+      </section>
+
+      <!-- 一键全流程生成 -->
+      <section class="section card pipeline-section">
         <div class="one-click-actions">
-          <span class="one-click-label">一键全流程：</span>
+          <span class="one-click-label">🚀 一键全流程</span>
           <el-select v-model="projectAspectRatio" style="width: 130px" @change="saveProjectSettings">
             <el-option label="16:9 横屏" value="16:9" />
             <el-option label="9:16 竖屏" value="9:16" />
@@ -254,7 +257,7 @@
             :disabled="!currentEpisodeId || pipelineRunning"
             @click="startOneClickPipeline"
           >
-            🚀 一键全流程生成
+            开始生成
           </el-button>
           <template v-if="pipelineRunning">
             <el-button v-if="!pipelinePaused" type="warning" @click="pipelinePaused = true">⏸ 暂停</el-button>
@@ -693,18 +696,26 @@
                 </span>
               </div>
             </div>
+          <!-- 分镜控制栏（卡片外，缩进表示属于当前幕） -->
+          <div class="sb-ctrl-bar">
+            <span class="sb-ctrl-num">{{ i + 1 }}</span>
+            <span class="sb-ctrl-title">{{ sb.title || '未命名分镜' }}</span>
+            <el-button size="small" plain class="sb-ctrl-btn sb-ctrl-config-btn" @click="onOpenVideoParamsDialog(sb)">⚙ 分镜配置</el-button>
+            <el-button size="small" plain class="sb-ctrl-btn" title="在本镜头前增加一个分镜" @click="onInsertStoryboardBefore(sb)">＋ 新增</el-button>
+            <el-button
+              class="sb-ctrl-delete"
+              type="danger"
+              text
+              size="small"
+              :title="`删除分镜${i + 1}`"
+              @click="onDeleteSingleStoryboard(sb.id)"
+            >
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
           <div :id="'sb-' + sb.id" class="storyboard-row">
-            <div class="sb-num-badge">
-              <span>{{ i + 1 }}</span>
-              <ElButton  type="danger" size="small" @click="onDeleteSingleStoryboard(sb.id)">删除</ElButton>
-            </div>
             <!-- 左：分镜脚本 -->
             <div class="sb-panel sb-script">
-              <div class="sb-panel-title">
-                <el-icon><Document /></el-icon>
-                <span>分镜脚本</span>
-                <span v-if="sb.title" class="sb-panel-title-name">{{ sb.title }}</span>
-              </div>
               <div class="sb-script-row sb-script-selects">
                 <el-select
                   :model-value="getSbCharacterIds(sb.id)"
@@ -820,24 +831,13 @@
                 <span class="sb-dot"></span>
                 <span>图片提示词</span>
               </div>
-              <div v-if="editingSbImagePromptId === sb.id" class="sb-image-prompt-edit">
-                <el-input v-model="editingSbImagePromptText" type="textarea" :rows="3" placeholder="图片提示词（用于生成分镜图）" />
-                <div class="sb-prompt-edit-actions">
-                  <el-button size="small" type="primary" @click="onSaveSbImagePrompt(sb)">保存</el-button>
-                  <el-button size="small" @click="editingSbImagePromptId = null">取消</el-button>
-                </div>
-              </div>
-              <div v-else class="sb-prompt-row">
+              <div class="sb-prompt-row">
                 <span class="sb-prompt-text">{{ sb.image_prompt || '暂无图片提示词' }}</span>
-                <el-button size="small" link type="primary" @click="onEditSbImagePrompt(sb)">编辑</el-button>
+                <el-button size="small" link type="primary" @click="onOpenSbPromptDialog(sb)">编辑</el-button>
               </div>
             </div>
             <!-- 中：分镜图（优先用 /images?storyboard_id 拉取到的图，否则用 composed_image） -->
             <div class="sb-panel sb-image">
-              <div class="sb-panel-title">
-                <el-icon><Picture /></el-icon>
-                <span>分镜图</span>
-              </div>
               <div
                 class="sb-image-area"
                 :class="{ 'sb-image-area--dragover': dragOverSbId === sb.id, 'sb-image-area--has-quad': getStripItems(sb.id).length > 0 }"
@@ -876,7 +876,7 @@
                   <template v-else>
                     <el-button type="primary" size="small" class="sb-gen-btn" :loading="generatingSbImageIds.has(sb.id)" @click="onGenerateSbImage(sb)">
                       <el-icon><MagicStick /></el-icon>
-                      生成分镜
+                      生成分镜参考图
                     </el-button>
                     <el-button size="small" :loading="uploadingSbImageId === sb.id" @click="onUploadSbImageClick(sb)">上传</el-button>
                   </template>
@@ -908,10 +908,6 @@
             </div>
             <!-- 右：分镜视频（由 /videos?storyboard_id 拉取）；有视频时仍显示提示词与生成按钮便于调整后重新生成 -->
             <div class="sb-panel sb-video">
-              <div class="sb-panel-title">
-                <el-icon><VideoCamera /></el-icon>
-                <span>分镜视频</span>
-              </div>
               <div v-if="getSbVideo(sb.id)" class="sb-video-area">
                 <video
                   v-if="assetVideoUrl(getSbVideo(sb.id))"
@@ -920,6 +916,10 @@
                   class="sb-video-player"
                   preload="metadata"
                 />
+                <span v-if="generatingSbVideoIds.has(sb.id)" class="sb-video-regenerating-overlay">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  正在重新生成...
+                </span>
               </div>
               <div v-else class="sb-video-area sb-video-placeholder">
                 <span v-if="generatingSbVideoIds.has(sb.id)" class="sb-video-generating-text">
@@ -927,125 +927,48 @@
                   正在生成视频...
                 </span>
                 <template v-else>
-                  <span>等待生成</span>
                   <div v-if="getSbVideoError(sb.id)" class="sb-video-error">
                     {{ getSbVideoError(sb.id) }}
                   </div>
+                  <el-button
+                    type="primary"
+                    size="small"
+                    class="sb-generate-video-btn"
+                    :loading="generatingSbVideoIds.has(sb.id)"
+                    :disabled="!sb.video_prompt"
+                    @click="onGenerateSbVideo(sb)"
+                  >
+                    生成分镜视频
+                  </el-button>
                 </template>
+              </div>
+              <!-- 视频历史条：有多条历史时显示，点击可切换 -->
+              <div v-if="getVideoStripItems(sb.id).length" class="sb-videos-strip">
+                <el-tooltip content="历史视频：点击可切换为当前视频" placement="top" :show-arrow="false">
+                  <el-icon class="sb-strip-hint-icon"><InfoFilled /></el-icon>
+                </el-tooltip>
+                <div
+                  v-for="item in getVideoStripItems(sb.id)"
+                  :key="item.key"
+                  class="sb-video-thumb"
+                  :title="`${item.label}（点击切换）`"
+                  @click="onSelectSbMainVideo(sb, item.video)"
+                >
+                  <video :src="item.src" preload="metadata" class="sb-video-thumb-player" />
+                  <span class="sb-video-thumb-label">{{ item.label }}</span>
+                </div>
+              </div>
+              <div v-if="getSbVideo(sb.id)" class="sb-video-actions">
+                <el-button size="small" :loading="generatingSbVideoIds.has(sb.id)" :disabled="!sb.video_prompt" @click="onGenerateSbVideo(sb)">重新生成</el-button>
               </div>
               <div class="sb-video-prompt-label">
                 <span class="sb-dot"></span>
                 <span>视频提示词</span>
               </div>
-              <el-collapse class="sb-video-fields-collapse">
-                <el-collapse-item :name="'fields-' + sb.id">
-                  <template #title>
-                    <span class="sb-collapse-title">视频提示词组成（可编辑）</span>
-                  </template>
-                  <div class="sb-video-fields">
-                    <div class="sb-field">
-                      <span class="sb-field-label">标题</span>
-                      <el-input v-model="sbTitle[sb.id]" size="small" placeholder="镜头标题" />
-                    </div>
-                    <div class="sb-field">
-                      <span class="sb-field-label">地点</span>
-                      <el-input v-model="sbLocation[sb.id]" size="small" placeholder="场景地点" />
-                    </div>
-                    <div class="sb-field">
-                      <span class="sb-field-label">时间</span>
-                      <el-input v-model="sbTime[sb.id]" size="small" placeholder="如：清晨/午后" />
-                    </div>
-                    <div class="sb-field">
-                      <span class="sb-field-label">时长(秒)</span>
-                      <el-input-number v-model="sbDuration[sb.id]" :min="1" :max="30" size="small" />
-                    </div>
-                    <div class="sb-field sb-field-full">
-                      <span class="sb-field-label">动作</span>
-                      <el-input v-model="sbAction[sb.id]" type="textarea" :rows="2" placeholder="动作描述" />
-                    </div>
-                    <div class="sb-field sb-field-full">
-                      <span class="sb-field-label">对白</span>
-                      <el-input v-model="sbDialogue[sb.id]" type="textarea" :rows="2" placeholder="角色对白" />
-                    </div>
-                    <div class="sb-field sb-field-full">
-                      <span class="sb-field-label">画面结果</span>
-                      <el-input v-model="sbResult[sb.id]" type="textarea" :rows="2" placeholder="动作完成后的画面结果" />
-                    </div>
-                    <div class="sb-field sb-field-full">
-                      <span class="sb-field-label">氛围</span>
-                      <el-input v-model="sbAtmosphere[sb.id]" size="small" placeholder="氛围/情绪" />
-                    </div>
-                    <div class="sb-field">
-                      <span class="sb-field-label">景别</span>
-                      <el-select v-model="sbShotType[sb.id]" placeholder="景别" size="small" class="sb-field-select">
-                        <el-option label="大远景" value="大远景" />
-                        <el-option label="远景" value="远景" />
-                        <el-option label="中景" value="中景" />
-                        <el-option label="近景" value="近景" />
-                        <el-option label="特写" value="特写" />
-                      </el-select>
-                    </div>
-                    <div class="sb-field">
-                      <span class="sb-field-label">镜头视角</span>
-                      <div style="display:flex;align-items:center;gap:4px;flex:1;flex-wrap:wrap">
-                        <el-select v-model="sbAngleS[sb.id]" size="small" placeholder="景别" style="width:82px">
-                          <el-option label="特写" value="close_up" />
-                          <el-option label="中景" value="medium" />
-                          <el-option label="远景" value="wide" />
-                        </el-select>
-                        <el-select v-model="sbAngleV[sb.id]" size="small" placeholder="俯仰" style="width:90px">
-                          <el-option label="平视" value="eye_level" />
-                          <el-option label="低角仰拍" value="low" />
-                          <el-option label="高角俯拍" value="high" />
-                          <el-option label="虫眼仰视" value="worm" />
-                        </el-select>
-                        <el-select v-model="sbAngleH[sb.id]" size="small" placeholder="方向" style="width:82px">
-                          <el-option label="正面" value="front" />
-                          <el-option label="前左45°" value="front_left" />
-                          <el-option label="左侧" value="left" />
-                          <el-option label="后左135°" value="back_left" />
-                          <el-option label="背面" value="back" />
-                          <el-option label="后右135°" value="back_right" />
-                          <el-option label="右侧" value="right" />
-                          <el-option label="前右45°" value="front_right" />
-                        </el-select>
-                        <span v-if="sbAngleS[sb.id] && sbAngleV[sb.id] && sbAngleH[sb.id]"
-                              style="font-size:11px;color:#6b7280;white-space:nowrap;background:#f3f4f6;padding:2px 7px;border-radius:4px">
-                          {{ angleToPromptFragment(sbAngleH[sb.id], sbAngleV[sb.id], sbAngleS[sb.id]).label }}
-                        </span>
-                      </div>
-                    </div>
-                    <div class="sb-field">
-                      <span class="sb-field-label">运镜</span>
-                      <el-input v-model="sbMovement[sb.id]" size="small" placeholder="如：固定/推镜/跟镜" />
-                    </div>
-                    <div class="sb-video-fields-actions">
-                      <el-button size="small" type="primary" @click="onSaveSbVideoFields(sb)">保存并更新视频提示词</el-button>
-                    </div>
-                  </div>
-                </el-collapse-item>
-              </el-collapse>
-              <div v-if="editingSbVideoPromptId === sb.id" class="sb-video-prompt-edit">
-                <el-input v-model="editingSbVideoPromptText" type="textarea" :rows="6" placeholder="视频提示词（手工编辑）" />
-                <div class="sb-video-prompt-edit-actions">
-                  <el-button size="small" type="primary" @click="onSaveSbVideoPrompt(sb)">保存</el-button>
-                  <el-button size="small" @click="editingSbVideoPromptId = null">取消</el-button>
-                </div>
-              </div>
-              <div v-else class="sb-video-prompt-row">
+              <div class="sb-video-params-bar">
                 <span class="sb-video-prompt-text sb-video-prompt-text--preview">{{ sb.video_prompt || '暂无视频提示词' }}</span>
-                <el-button size="small" link type="primary" @click="onEditSbVideoPrompt(sb)">手工编辑</el-button>
+                <el-button size="small" link type="primary" @click="onOpenSbPromptDialog(sb)">手工编辑</el-button>
               </div>
-              <el-button
-                type="primary"
-                size="small"
-                class="sb-generate-video-btn"
-                :loading="generatingSbVideoIds.has(sb.id)"
-                :disabled="!sb.video_prompt"
-                @click="onGenerateSbVideo(sb)"
-              >
-                生成视频
-              </el-button>
             </div>
           </div>
           </template>
@@ -1347,6 +1270,7 @@
             <div class="library-item-name">{{ item.name || '未命名' }}</div>
             <div class="library-item-desc">{{ (item.description || item.prompt || '').slice(0, 60) }}{{ (item.description || item.prompt || '').length > 60 ? '…' : '' }}</div>
             <div class="library-item-actions">
+              <el-button size="small" type="primary" :loading="addingPropFromLibraryId === item.id" :disabled="!currentEpisodeId" @click="onAddPropFromLibrary(item)">加入本集</el-button>
               <el-button size="small" @click="openEditPropLibrary(item)">编辑</el-button>
               <el-button size="small" type="danger" plain @click="onDeletePropLibrary(item)">删除</el-button>
             </div>
@@ -1406,6 +1330,7 @@
             <div class="library-item-name">{{ item.location || item.time || '未命名' }}</div>
             <div class="library-item-desc">{{ (item.description || item.prompt || '').slice(0, 60) }}{{ (item.description || item.prompt || '').length > 60 ? '…' : '' }}</div>
             <div class="library-item-actions">
+              <el-button size="small" type="primary" :loading="addingSceneFromLibraryId === item.id" :disabled="!currentEpisodeId" @click="onAddSceneFromLibrary(item)">加入本集</el-button>
               <el-button size="small" @click="openEditSceneLibrary(item)">编辑</el-button>
               <el-button size="small" type="danger" plain @click="onDeleteSceneLibrary(item)">删除</el-button>
             </div>
@@ -1450,6 +1375,215 @@
       <template #footer>
         <el-button @click="showEditSceneLibrary = false">取消</el-button>
         <el-button type="primary" :loading="editSceneLibrarySaving" @click="submitEditSceneLibrary">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 分镜提示词编辑弹窗 -->
+    <el-dialog
+      v-model="showSbPromptDialog"
+      :title="`分镜 ${sbPromptTarget?.storyboard_number ?? ''} · 编辑提示词`"
+      width="700px"
+      @close="sbPromptTarget = null"
+    >
+      <el-form v-if="sbPromptTarget" label-width="0" class="sb-prompt-dialog-form">
+        <!-- 图片区 -->
+        <div class="sb-prompt-section-title">🖼 图片提示词</div>
+        <el-form-item label="">
+          <div style="width:100%">
+            <div style="font-size:12px; color:#6b7280; margin-bottom:4px;">原始提示词（分镜生成时写入，仅供参考）</div>
+            <el-input
+              v-model="sbPromptImageText"
+              type="textarea"
+              :rows="4"
+              placeholder="分镜生成时由 AI 写入的原始描述"
+            />
+          </div>
+        </el-form-item>
+        <el-form-item label="">
+          <div style="width:100%">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+              <span style="font-size:12px; color:#6b7280;">优化提示词（AI 润色后的英文 prompt，生图时优先使用）</span>
+              <el-button
+                size="small"
+                type="warning"
+                plain
+                :loading="sbPromptPolishing"
+                @click="onPolishSbPrompt"
+              >{{ sbPromptPolishedText ? '重新生成' : '立即生成' }}</el-button>
+            </div>
+            <el-input
+              v-model="sbPromptPolishedText"
+              type="textarea"
+              :rows="5"
+              placeholder="点击「立即生成」让 AI 润色，或手动填写英文 prompt"
+            />
+          </div>
+        </el-form-item>
+        <!-- 视频区 -->
+        <div class="sb-prompt-section-title" style="margin-top:12px;">🎬 视频提示词</div>
+        <el-form-item label="">
+          <el-input
+            v-model="sbPromptVideoText"
+            type="textarea"
+            :rows="5"
+            placeholder="视频生成提示词（可选，留空则由系统自动生成）"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showSbPromptDialog = false">取消</el-button>
+        <el-button type="primary" :loading="sbPromptSaving" @click="onSaveSbPromptDialog">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 分镜视频参数编辑弹窗 -->
+    <el-dialog
+      v-model="showVideoParamsDialog"
+      :title="`分镜 ${videoParamsTarget?.storyboard_number ?? ''} · 视频参数`"
+      width="680px"
+      destroy-on-close
+    >
+      <el-form v-if="videoParamsTarget" label-width="70px" size="small" class="vp-dialog-form">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="标题">
+              <el-input v-model="sbTitle[videoParamsTarget.id]" placeholder="镜头标题" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="地点">
+              <el-input v-model="sbLocation[videoParamsTarget.id]" placeholder="场景地点" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="时间">
+              <el-input v-model="sbTime[videoParamsTarget.id]" placeholder="清晨/午后" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="12">
+          <el-col :span="6">
+            <el-form-item label="时长(秒)">
+              <el-input-number v-model="sbDuration[videoParamsTarget.id]" :min="1" :max="30" style="width:100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="景别">
+              <el-select v-model="sbShotType[videoParamsTarget.id]" placeholder="景别" style="width:100%">
+                <el-option label="大远景" value="大远景" />
+                <el-option label="远景" value="远景" />
+                <el-option label="中景" value="中景" />
+                <el-option label="近景" value="近景" />
+                <el-option label="特写" value="特写" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="运镜">
+              <el-select v-model="sbMovement[videoParamsTarget.id]" placeholder="运镜" style="width:100%" clearable>
+                <el-option label="固定" value="static" />
+                <el-option label="推镜" value="push" />
+                <el-option label="拉镜" value="pull" />
+                <el-option label="横摇" value="pan" />
+                <el-option label="纵摇" value="tilt" />
+                <el-option label="跟镜" value="tracking" />
+                <el-option label="升镜" value="crane_up" />
+                <el-option label="降镜" value="crane_dn" />
+                <el-option label="环绕" value="orbit" />
+                <el-option label="手持" value="handheld" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="6">
+            <el-form-item label="氛围">
+              <el-input v-model="sbAtmosphere[videoParamsTarget.id]" placeholder="氛围/情绪" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="12">
+          <el-col :span="8">
+            <el-form-item label="镜头视角">
+              <div style="display:flex;gap:4px;flex-wrap:wrap">
+                <el-select v-model="sbAngleS[videoParamsTarget.id]" placeholder="景别" style="width:76px">
+                  <el-option label="特写" value="close_up" />
+                  <el-option label="中景" value="medium" />
+                  <el-option label="远景" value="wide" />
+                </el-select>
+                <el-select v-model="sbAngleV[videoParamsTarget.id]" placeholder="俯仰" style="width:86px">
+                  <el-option label="平视" value="eye_level" />
+                  <el-option label="低角仰拍" value="low" />
+                  <el-option label="高角俯拍" value="high" />
+                  <el-option label="虫眼仰视" value="worm" />
+                </el-select>
+                <el-select v-model="sbAngleH[videoParamsTarget.id]" placeholder="方向" style="width:80px">
+                  <el-option label="正面" value="front" />
+                  <el-option label="前左45°" value="front_left" />
+                  <el-option label="左侧" value="left" />
+                  <el-option label="后左135°" value="back_left" />
+                  <el-option label="背面" value="back" />
+                  <el-option label="后右135°" value="back_right" />
+                  <el-option label="右侧" value="right" />
+                  <el-option label="前右45°" value="front_right" />
+                </el-select>
+                <span v-if="sbAngleS[videoParamsTarget.id] && sbAngleV[videoParamsTarget.id] && sbAngleH[videoParamsTarget.id]"
+                      style="font-size:11px;color:#6b7280;background:#f3f4f6;padding:2px 6px;border-radius:4px;white-space:nowrap">
+                  {{ angleToPromptFragment(sbAngleH[videoParamsTarget.id], sbAngleV[videoParamsTarget.id], sbAngleS[videoParamsTarget.id]).label }}
+                </span>
+              </div>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="灯光">
+              <el-select v-model="sbLighting[videoParamsTarget.id]" placeholder="灯光风格" style="width:100%" clearable>
+                <el-option label="自然光" value="natural" />
+                <el-option label="顺光" value="front" />
+                <el-option label="侧光" value="side" />
+                <el-option label="逆光" value="backlit" />
+                <el-option label="顶光" value="top" />
+                <el-option label="底光" value="under" />
+                <el-option label="柔光" value="soft" />
+                <el-option label="戏剧光" value="dramatic" />
+                <el-option label="黄金时段" value="golden_hour" />
+                <el-option label="蓝调时刻" value="blue_hour" />
+                <el-option label="夜景" value="night" />
+                <el-option label="霓虹" value="neon" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="景深">
+              <el-select v-model="sbDof[videoParamsTarget.id]" placeholder="景深" style="width:100%" clearable>
+                <el-option label="极浅景深" value="extreme_shallow" />
+                <el-option label="浅景深" value="shallow" />
+                <el-option label="中景深" value="medium" />
+                <el-option label="深景深（全焦）" value="deep" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="动作">
+          <el-input v-model="sbAction[videoParamsTarget.id]" type="textarea" :rows="2" placeholder="动作描述" />
+        </el-form-item>
+        <el-form-item label="对白">
+          <el-input v-model="sbDialogue[videoParamsTarget.id]" type="textarea" :rows="2" placeholder="角色对白" />
+        </el-form-item>
+        <el-form-item label="画面结果">
+          <el-input v-model="sbResult[videoParamsTarget.id]" type="textarea" :rows="2" placeholder="动作完成后的画面结果" />
+        </el-form-item>
+        <el-form-item label="视频提示词">
+          <el-input
+            :model-value="buildVideoPromptFromFields(videoParamsTarget.id)"
+            type="textarea"
+            :rows="3"
+            readonly
+            placeholder="保存后自动生成"
+            style="color:#6b7280"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showVideoParamsDialog = false">取消</el-button>
+        <el-button type="primary" :loading="videoParamsSaving" @click="onSaveVideoParams">保存并更新</el-button>
       </template>
     </el-dialog>
 
@@ -1766,7 +1900,7 @@ const pipelineCountdown = ref(0)      // 剩余秒数，0 表示不在倒计时
 const pipelineCountdownMsg = ref('')  // 倒计时说明文字
 const pipelineConcurrency = ref(3)
 const pipelineVideoConcurrency = ref(3)
-const pipelineActiveTasks = ref(new Set())
+const pipelineActiveTasks = reactive(new Set())
 
 async function loadPipelineConcurrency() {
   try {
@@ -1794,7 +1928,7 @@ async function runConcurrently(items, concurrency, fn, options = {}) {
       const i = index++
       const item = items[i]
       const label = getLabel(item)
-      if (label) pipelineActiveTasks.value.add(label)
+      if (label) pipelineActiveTasks.add(label)
       try {
         const result = await fn(item, i)
         if (result && typeof result === 'object' && result.paused) {
@@ -1802,7 +1936,7 @@ async function runConcurrently(items, concurrency, fn, options = {}) {
           return
         }
       } finally {
-        if (label) pipelineActiveTasks.value.delete(label)
+        if (label) pipelineActiveTasks.delete(label)
       }
     }
   }
@@ -1927,6 +2061,11 @@ const navSteps = computed(() => {
 /** 聚合所有当前正在运行的任务标签，用于悬浮任务面板 */
 const allActiveTasks = computed(() => {
   const tasks = []
+  // 一键全流程 pipeline
+  if (pipelineRunning.value) {
+    const step = pipelineCurrentStep.value
+    tasks.push(step ? step.replace(/^\[步骤 \d+\/\d+\] /, '') : '一键全流程运行中...')
+  }
   // 整体操作
   if (storyGenerating.value || scriptGenerating.value) tasks.push('生成剧本...')
   if (charactersGenerating.value) tasks.push('提取角色...')
@@ -1980,6 +2119,8 @@ const sbAngleH = ref({})   // 结构化视角：水平方向
 const sbAngleV = ref({})   // 结构化视角：俯仰角度
 const sbAngleS = ref({})   // 结构化视角：景别
 const sbMovement = ref({})
+const sbLighting = ref({})   // 灯光风格
+const sbDof = ref({})        // 景深
 // 分镜图片/视频列表（由 /images?storyboard_id=xx 和 /videos?storyboard_id=xx 拉取）
 const sbImages = ref({})
 const sbVideos = ref({})
@@ -1993,6 +2134,10 @@ const regenSbImagesProgress = ref({})
 const batchImageRunning = ref(false)
 const batchImageStopping = ref(false)
 const batchImageProgress = ref({ current: 0, total: 0, failed: 0 })
+const inferringParams = ref(false)
+const showVideoParamsDialog = ref(false)
+const videoParamsTarget = ref(null)
+const videoParamsSaving = ref(false)
 const batchImageErrors = ref([])
 // 批量生成分镜视频
 const batchVideoRunning = ref(false)
@@ -2002,9 +2147,17 @@ const batchVideoErrors = ref([])
 /** 正在编辑视频提示词的分镜 id；编辑中显示文本框与保存/取消 */
 const editingSbVideoPromptId = ref(null)
 const editingSbVideoPromptText = ref('')
-/** 正在编辑图片提示词的分镜 id */
+/** 正在编辑图片提示词的分镜 id（行内编辑，保留供内部 onSaveSbImagePrompt 使用） */
 const editingSbImagePromptId = ref(null)
 const editingSbImagePromptText = ref('')
+/** 分镜提示词弹窗 */
+const showSbPromptDialog = ref(false)
+const sbPromptTarget = ref(null)
+const sbPromptImageText = ref('')       // 原始 image_prompt
+const sbPromptPolishedText = ref('')    // AI 优化后 polished_prompt
+const sbPromptVideoText = ref('')       // video_prompt
+const sbPromptSaving = ref(false)
+const sbPromptPolishing = ref(false)
 const uploadingSbImageId = ref(null)
 const sbImageFileInput = ref(null)
 const sbImageUploadForId = ref(null)
@@ -2034,6 +2187,8 @@ const editCharLibrarySaving = ref(false)
 const addingCharToLibraryId = ref(null)
 const addingCharToMaterialId = ref(null)
 const addingCharFromLibraryId = ref(null)
+const addingSceneFromLibraryId = ref(null)
+const addingPropFromLibraryId = ref(null)
 const addingPropToLibraryId = ref(null)
 const addingPropToMaterialId = ref(null)
 const addingSceneToLibraryId = ref(null)
@@ -2176,12 +2331,43 @@ function getQuadGridImage(storyboardId) {
   if (!Array.isArray(list)) return null
   return list.find((i) => i.status === 'completed' && (i.frame_type === 'quad_grid' || i.frame_type === 'nine_grid') && (i.image_url || i.local_path)) || null
 }
-/** 取该分镜下第一条已完成的视频记录（供展示） */
-function getSbVideo(storyboardId) {
+/** 取该分镜所有已完成的视频记录 */
+function getSbAllVideos(storyboardId) {
   const list = sbVideos.value[storyboardId]
-  if (!Array.isArray(list)) return null
-  const completed = list.find((i) => i.status === 'completed' && (i.video_url || i.local_path))
-  return completed || null
+  if (!Array.isArray(list)) return []
+  return list.filter((i) => i.status === 'completed' && (i.video_url || i.local_path))
+}
+/** 取该分镜当前选中的视频（尊重 sbSelectedVideoId，否则默认第一条） */
+function getSbVideo(storyboardId) {
+  const all = getSbAllVideos(storyboardId)
+  if (all.length === 0) return null
+  const selectedId = sbSelectedVideoId.value[storyboardId]
+  if (selectedId != null) {
+    const found = all.find((v) => v.id === selectedId)
+    if (found) return found
+  }
+  return all[0]
+}
+/** 视频历史条：返回非当前选中的已完成视频列表 */
+function getVideoStripItems(storyboardId) {
+  const all = getSbAllVideos(storyboardId)
+  const current = getSbVideo(storyboardId)
+  return all
+    .filter((v) => !current || v.id !== current.id)
+    .map((v, idx) => ({
+      key: `vid-${v.id}`,
+      video: v,
+      src: assetVideoUrl(v),
+      label: `历史${idx + 2}`,
+    }))
+}
+/** 选中某条历史视频为当前视频，并持久化到分镜记录供合成视频使用 */
+function onSelectSbMainVideo(sb, video) {
+  sbSelectedVideoId.value = { ...sbSelectedVideoId.value, [sb.id]: video.id }
+  storyboardsAPI.update(sb.id, {
+    video_url: video.video_url || null,
+    local_path: video.local_path || undefined,
+  }).catch(e => console.warn('[主视频] 保存后端失败', e))
 }
 /** 取该分镜最近一次视频生成的错误信息（从 API 返回的记录或本地即时错误） */
 function getSbVideoError(storyboardId) {
@@ -2225,9 +2411,32 @@ async function loadStoryboardMedia() {
   restoreSelectionsFromBackend()
 }
 
+/** 只刷新单条分镜的图片/视频，避免每次单图操作都全量请求所有分镜 */
+async function loadSingleStoryboardMedia(sbId) {
+  if (!sbId) return
+  try {
+    const [imgRes, vidRes] = await Promise.all([
+      imagesAPI.list({ storyboard_id: sbId, page: 1, page_size: 100 }),
+      videosAPI.list({ storyboard_id: sbId, page: 1, page_size: 50 })
+    ])
+    sbImages.value = {
+      ...sbImages.value,
+      [sbId]: (imgRes && imgRes.items) ? imgRes.items : []
+    }
+    sbVideos.value = {
+      ...sbVideos.value,
+      [sbId]: (vidRes && vidRes.items) ? vidRes.items : []
+    }
+    restoreSelectionsFromBackend()
+  } catch (_) {
+    // 静默忽略，不影响其他分镜的显示
+  }
+}
+
 // ── 主图选择 ─────────────────────────────────────────────────────────
 
 const sbSelectedImgId = ref({})   // sbId → 选中的 image_generation.id
+const sbSelectedVideoId = ref({}) // sbId → 选中的 video_generation.id
 
 /**
  * 从后端 storyboard.image_url / local_path 恢复主图选择状态。
@@ -2303,7 +2512,7 @@ async function onGenerateSbImage(sb) {
     const res = await imagesAPI.create({
       storyboard_id: sb.id,
       drama_id: dramaId.value,
-      prompt: sb.image_prompt || sb.description || '',
+      prompt: sb.polished_prompt || sb.image_prompt || sb.description || '',
       model: undefined,
       style: getSelectedStyle(),
       frame_type: gridMode.value !== 'single' ? gridMode.value : undefined,
@@ -2311,14 +2520,14 @@ async function onGenerateSbImage(sb) {
     })
     ElMessage.success('分镜图生成任务已提交')
     if (res?.task_id) {
-      const pollRes = await pollTask(res.task_id, () => loadStoryboardMedia())
+      const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
       if (pollRes?.status === 'failed') {
         sb.errorMsg = pollRes.error || '生成失败'
       } else {
         ElMessage.success('分镜图生成完成')
       }
     } else {
-      await loadStoryboardMedia()
+      await loadSingleStoryboardMedia(sb.id)
     }
   } catch (e) {
     console.error(e)
@@ -2359,7 +2568,7 @@ async function doUploadSbImage(sbId, file) {
     // 清除手动选择，让最新上传的图（images[0]）自动成为主图
     const { [sbId]: _r, ...rest } = sbSelectedImgId.value
     sbSelectedImgId.value = rest
-    await loadStoryboardMedia()
+    await loadSingleStoryboardMedia(sbId)
   } catch (e) {
     ElMessage.error(e.message || '上传失败')
   } finally {
@@ -2399,6 +2608,8 @@ function syncStoryboardStateFromEpisode(ep) {
   const nextAngleV = {}
   const nextAngleS = {}
   const nextMovement = {}
+  const nextLighting = {}
+  const nextDof = {}
   for (const sb of boards) {
     nextScene[sb.id] = sb.scene_id ?? null
     nextDialogue[sb.id] = sb.dialogue ?? ''
@@ -2415,6 +2626,8 @@ function syncStoryboardStateFromEpisode(ep) {
     nextAngleV[sb.id] = sb.angle_v || ''
     nextAngleS[sb.id] = sb.angle_s || ''
     nextMovement[sb.id] = (sb.movement ?? '').toString()
+    nextLighting[sb.id] = sb.lighting_style || ''
+    nextDof[sb.id] = sb.depth_of_field || ''
     const charList = Array.isArray(sb.characters) ? sb.characters : (sb.characters != null ? [sb.characters] : [])
     nextCharIds[sb.id] = charList.map((c) => (typeof c === 'object' && c != null ? Number(c.id) : Number(c))).filter((n) => Number.isFinite(n))
     nextPropIds[sb.id] = Array.isArray(sb.prop_ids) ? sb.prop_ids : []
@@ -2436,6 +2649,8 @@ function syncStoryboardStateFromEpisode(ep) {
   sbAngleV.value = nextAngleV
   sbAngleS.value = nextAngleS
   sbMovement.value = nextMovement
+  sbLighting.value = nextLighting
+  sbDof.value = nextDof
 }
 
 function onEpisodeSelect(epId) {
@@ -2601,7 +2816,7 @@ async function onRegenAffectedSbImages(assetKey, affectedBoards) {
         const res = await imagesAPI.create({
           storyboard_id: sb.id,
           drama_id: dramaId.value,
-          prompt: sb.image_prompt || sb.description || '',
+          prompt: sb.polished_prompt || sb.image_prompt || sb.description || '',
           style: getSelectedStyle(),
           aspect_ratio: projectAspectRatio.value || '16:9',
         })
@@ -2613,7 +2828,7 @@ async function onRegenAffectedSbImages(assetKey, affectedBoards) {
               attempts++
               try {
                 const t = await taskAPI.get(res.task_id)
-                if (t.status === 'completed') { await loadStoryboardMedia(); return resolve({ status: 'completed' }) }
+                if (t.status === 'completed') { await loadSingleStoryboardMedia(sb.id); return resolve({ status: 'completed' }) }
                 if (t.status === 'failed') return resolve({ status: 'failed', error: t.error || '任务失败' })
               } catch (_) {}
               if (attempts < maxAttempts) setTimeout(tick, 2000)
@@ -2623,7 +2838,7 @@ async function onRegenAffectedSbImages(assetKey, affectedBoards) {
           })
           if (pollRes?.status !== 'completed') failed++
         } else {
-          await loadStoryboardMedia()
+          await loadSingleStoryboardMedia(sb.id)
         }
       } catch (_) {
         failed++
@@ -3279,6 +3494,82 @@ async function onAddCharFromLibrary(item) {
   }
 }
 
+// 从本剧场景库加入本集
+async function onAddSceneFromLibrary(item) {
+  if (!store.dramaId || !currentEpisodeId.value) return
+  addingSceneFromLibraryId.value = item.id
+  try {
+    // 只按地点名匹配（不要求 time 完全相同，避免细微差异导致重复创建）
+    const existingScene = (store.scenes || []).find(
+      (s) => s.location === item.location
+    )
+    if (existingScene) {
+      await sceneAPI.update(existingScene.id, {
+        location: item.location || existingScene.location,
+        time: item.time || existingScene.time,
+        // 若库里有 prompt 则补充，但不覆盖本集已有内容
+        prompt: existingScene.prompt || item.prompt || '',
+        image_url: item.image_url || existingScene.image_url || undefined,
+        local_path: item.local_path || existingScene.local_path || undefined,
+      })
+      ElMessage.success(`「${item.location || '场景'}」已更新到本集`)
+    } else {
+      await sceneAPI.create({
+        drama_id: store.dramaId,
+        episode_id: currentEpisodeId.value,
+        location: item.location || '',
+        time: item.time || '',
+        prompt: item.prompt || '',
+        image_url: item.image_url || undefined,
+        local_path: item.local_path || undefined,
+      })
+      ElMessage.success(`「${item.location || '场景'}」已加入本集`)
+    }
+    await loadDrama()
+  } catch (e) {
+    ElMessage.error(e.message || '加入失败')
+  } finally {
+    addingSceneFromLibraryId.value = null
+  }
+}
+
+// 从本剧道具库加入本集
+async function onAddPropFromLibrary(item) {
+  if (!store.dramaId || !currentEpisodeId.value) return
+  addingPropFromLibraryId.value = item.id
+  try {
+    const existingProp = (store.props || []).find((p) => p.name === item.name)
+    if (existingProp) {
+      await propAPI.update(existingProp.id, {
+        name: item.name || existingProp.name,
+        type: item.type || existingProp.type || undefined,
+        description: item.description || existingProp.description || undefined,
+        prompt: item.prompt || existingProp.prompt || undefined,
+        image_url: item.image_url || existingProp.image_url || undefined,
+        local_path: item.local_path || existingProp.local_path || undefined,
+      })
+      ElMessage.success(`「${item.name || '道具'}」已更新到本集`)
+    } else {
+      await propAPI.create({
+        drama_id: store.dramaId,
+        episode_id: currentEpisodeId.value,
+        name: item.name || '',
+        type: item.type || undefined,
+        description: item.description || undefined,
+        prompt: item.prompt || undefined,
+        image_url: item.image_url || undefined,
+        local_path: item.local_path || undefined,
+      })
+      ElMessage.success(`「${item.name || '道具'}」已加入本集`)
+    }
+    await loadDrama()
+  } catch (e) {
+    ElMessage.error(e.message || '加入失败')
+  } finally {
+    addingPropFromLibraryId.value = null
+  }
+}
+
 async function loadPropLibraryList() {
   propLibraryLoading.value = true
   try {
@@ -3843,6 +4134,63 @@ function onEditSbImagePrompt(sb) {
   editingSbImagePromptText.value = (sb.image_prompt || '').toString()
 }
 
+async function onOpenSbPromptDialog(sb) {
+  if (!sb?.id) return
+  // 先用缓存数据快速打开弹窗，避免等待感
+  sbPromptTarget.value = sb
+  sbPromptImageText.value = (sb.image_prompt || '').toString()
+  sbPromptPolishedText.value = (sb.polished_prompt || '').toString()
+  sbPromptVideoText.value = (sb.video_prompt || '').toString()
+  showSbPromptDialog.value = true
+  // 后台拉取最新数据（图片生成后 polished_prompt 可能已被写入）
+  try {
+    const fresh = await storyboardsAPI.get(sb.id)
+    if (fresh?.id) {
+      sbPromptTarget.value = fresh
+      sbPromptImageText.value = (fresh.image_prompt || '').toString()
+      sbPromptPolishedText.value = (fresh.polished_prompt || '').toString()
+      sbPromptVideoText.value = (fresh.video_prompt || '').toString()
+    }
+  } catch (_) {}
+}
+
+async function onPolishSbPrompt() {
+  const sb = sbPromptTarget.value
+  if (!sb?.id) return
+  sbPromptPolishing.value = true
+  try {
+    const res = await storyboardsAPI.polishPrompt(sb.id)
+    if (res?.polished_prompt) {
+      sbPromptPolishedText.value = res.polished_prompt
+      ElMessage.success('优化提示词已生成')
+    }
+  } catch (e) {
+    ElMessage.error(e.message || '生成失败，请检查文本模型配置')
+  } finally {
+    sbPromptPolishing.value = false
+  }
+}
+
+async function onSaveSbPromptDialog() {
+  const sb = sbPromptTarget.value
+  if (!sb?.id) return
+  sbPromptSaving.value = true
+  try {
+    await storyboardsAPI.update(sb.id, {
+      image_prompt: sbPromptImageText.value.trim() || null,
+      polished_prompt: sbPromptPolishedText.value.trim() || null,
+      video_prompt: sbPromptVideoText.value.trim() || null,
+    })
+    await loadDrama()
+    showSbPromptDialog.value = false
+    ElMessage.success('提示词已保存')
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    sbPromptSaving.value = false
+  }
+}
+
 async function onSaveSbImagePrompt(sb) {
   if (!sb?.id) return
   try {
@@ -3929,6 +4277,8 @@ async function onSaveSbVideoFields(sb) {
       angle_v: sbAngleV.value[sb.id] || null,
       angle_s: sbAngleS.value[sb.id] || null,
       movement: (sbMovement.value[sb.id] || '').toString().trim() || null,
+      lighting_style: sbLighting.value[sb.id] || null,
+      depth_of_field: sbDof.value[sb.id] || null,
       shot_type: (sbShotType.value[sb.id] || '').toString().trim() || null,
       video_prompt
     })
@@ -3951,14 +4301,61 @@ async function onSaveSbVideoPrompt(sb) {
   }
 }
 
+function onOpenVideoParamsDialog(sb) {
+  videoParamsTarget.value = sb
+  showVideoParamsDialog.value = true
+}
+
+async function onSaveVideoParams() {
+  const sb = videoParamsTarget.value
+  if (!sb?.id) return
+  videoParamsSaving.value = true
+  try {
+    await onSaveSbVideoFields(sb)
+    showVideoParamsDialog.value = false
+  } catch (e) {
+    ElMessage.error(e.message || '保存失败')
+  } finally {
+    videoParamsSaving.value = false
+  }
+}
+
+async function onBatchInferParams() {
+  if (!currentEpisodeId.value) return
+  inferringParams.value = true
+  try {
+    const res = await storyboardsAPI.batchInferParams(currentEpisodeId.value, false)
+    await loadDrama()
+    ElMessage.success(`摄影参数推断完成，更新了 ${res?.updated ?? 0} 条分镜`)
+  } catch (e) {
+    ElMessage.error(e.message || '推断失败')
+  } finally {
+    inferringParams.value = false
+  }
+}
+
 async function onGenerateSbVideo(sb) {
   if (!dramaId.value || !sb?.id || !sb.video_prompt) return
   if (!getSbFirstFrameUrl(sb)) {
-    ElMessage.warning('请先生成或上传该分镜的图片，再生成视频')
-    return
+    try {
+      await ElMessageBox.confirm(
+        '当前没有分镜参考图，将根据文字提示词直接生成视频，效果可能不稳定。确认继续？',
+        '没有分镜参考图',
+        { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch {
+      return
+    }
   }
   generatingSbVideoIds.add(sb.id)
   sbVideoErrors.value[sb.id] = ''
+  // 清除前端选中状态 + 清除后端手动指定的 video_url，让合成时自动取最新生成的视频
+  if (sbSelectedVideoId.value[sb.id] != null) {
+    const next = { ...sbSelectedVideoId.value }
+    delete next[sb.id]
+    sbSelectedVideoId.value = next
+  }
+  storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
   try {
     const firstFrameUrl = await getMainImageUrlForVideo(sb)
     const absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
@@ -3975,7 +4372,7 @@ async function onGenerateSbVideo(sb) {
       duration: videoClipDuration.value || undefined,
     })
     if (res?.task_id) {
-      const pollRes = await pollTask(res.task_id, () => loadStoryboardMedia())
+      const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
       if (pollRes?.status === 'failed') {
         sbVideoErrors.value[sb.id] = pollRes.error || '视频生成失败'
       } else if (pollRes?.status === 'completed') {
@@ -3983,7 +4380,7 @@ async function onGenerateSbVideo(sb) {
         ElMessage.success('视频生成完成')
       }
     } else {
-      await loadStoryboardMedia()
+      await loadSingleStoryboardMedia(sb.id)
       ElMessage.success('视频生成已提交，请稍后查看')
     }
   } catch (e) {
@@ -3991,7 +4388,7 @@ async function onGenerateSbVideo(sb) {
     ElMessage.error(e.message || '提交失败')
   } finally {
     generatingSbVideoIds.delete(sb.id)
-    await loadStoryboardMedia()
+    await loadSingleStoryboardMedia(sb.id)
   }
 }
 
@@ -4032,6 +4429,8 @@ async function onGenerateStoryboard() {
       }
     }
     await loadDrama()
+    // 生成完成后静默补全空缺的摄影参数（只填未填字段，不覆盖 AI 已填的）
+    storyboardsAPI.batchInferParams(currentEpisodeId.value, false).catch(() => {})
     ElMessage.success('分镜生成完成')
   } catch (e) {
     // HTTP 错误由 request 拦截器统一展示，此处仅处理拦截器未覆盖的异常
@@ -4082,13 +4481,26 @@ async function onDeleteSingleStoryboard(id){
   }
 }
 
+async function onInsertStoryboardBefore(sb) {
+  try {
+    await storyboardsAPI.insertBefore(sb.id)
+    ElMessage.success('已在此位置前新增空白分镜')
+    await loadDrama()
+  } catch (e) {
+    ElMessage.error(e.message || '新增失败')
+  }
+}
+
 async function startBatchImageGeneration() {
   if (!currentEpisodeId.value || batchImageRunning.value || pipelineRunning.value) return
   batchImageErrors.value = []
   batchImageStopping.value = false
   batchImageRunning.value = true
   try {
-    await loadStoryboardMedia()
+    // 仅当媒体数据尚未加载时才全量拉取，避免点击时触发大量冗余请求
+    if (Object.keys(sbImages.value).length === 0) {
+      await loadStoryboardMedia()
+    }
     const boards = store.storyboards || []
     const todo = boards.filter((sb) => !hasSbImage(sb))
     if (todo.length === 0) {
@@ -4096,37 +4508,47 @@ async function startBatchImageGeneration() {
       return
     }
     batchImageProgress.value = { current: 0, total: todo.length, failed: 0 }
-    for (let i = 0; i < todo.length; i++) {
-      if (batchImageStopping.value) { ElMessage.info('批量生成已停止'); break }
-      batchImageProgress.value = { ...batchImageProgress.value, current: i + 1 }
-      const sb = todo[i]
-      try {
-        const res = await imagesAPI.create({
-          storyboard_id: sb.id,
-          drama_id: dramaId.value,
-          prompt: sb.image_prompt || sb.description || '',
-          style: getSelectedStyle(),
-          frame_type: gridMode.value !== 'single' ? gridMode.value : undefined,
-          aspect_ratio: projectAspectRatio.value || '16:9',
-        })
-        if (res?.task_id) {
-          const pollRes = await pollTask(res.task_id, () => loadStoryboardMedia())
-          if (pollRes?.status === 'failed') {
-            batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
-            batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
+    const concurrency = pipelineConcurrency.value || 3
+    let doneCount = 0
+
+    // 并发执行，使用与 pipeline 相同的并发模型
+    let queueIdx = 0
+    const worker = async () => {
+      while (queueIdx < todo.length) {
+        if (batchImageStopping.value) break
+        const sb = todo[queueIdx++]
+        try {
+          const res = await imagesAPI.create({
+            storyboard_id: sb.id,
+            drama_id: dramaId.value,
+            prompt: sb.polished_prompt || sb.image_prompt || sb.description || '',
+            style: getSelectedStyle(),
+            frame_type: gridMode.value !== 'single' ? gridMode.value : undefined,
+            aspect_ratio: projectAspectRatio.value || '16:9',
+          })
+          if (res?.task_id) {
+            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+            if (pollRes?.status === 'failed') {
+              batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
+              batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
+            }
+          } else {
+            await loadSingleStoryboardMedia(sb.id)
           }
-        } else {
-          await loadStoryboardMedia()
+        } catch (e) {
+          batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
+          batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
         }
-      } catch (e) {
-        batchImageErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
-        batchImageProgress.value = { ...batchImageProgress.value, failed: batchImageProgress.value.failed + 1 }
+        doneCount++
+        batchImageProgress.value = { ...batchImageProgress.value, current: doneCount }
       }
-      if (!batchImageStopping.value) await new Promise((r) => setTimeout(r, 600))
     }
+    await Promise.allSettled(Array.from({ length: Math.min(concurrency, todo.length) }, () => worker()))
     if (!batchImageStopping.value) {
       if (batchImageProgress.value.failed === 0) ElMessage.success(`分镜图批量生成完成（共 ${todo.length} 条）`)
       else ElMessage.warning(`批量完成，${batchImageProgress.value.failed}/${todo.length} 条失败`)
+    } else {
+      ElMessage.info('批量生成已停止')
     }
   } finally {
     batchImageRunning.value = false
@@ -4139,7 +4561,10 @@ async function startBatchVideoGeneration() {
   batchVideoStopping.value = false
   batchVideoRunning.value = true
   try {
-    await loadStoryboardMedia()
+    // 仅当媒体数据尚未加载时才全量拉取，避免点击时触发大量冗余请求
+    if (Object.keys(sbVideos.value).length === 0) {
+      await loadStoryboardMedia()
+    }
     const boards = store.storyboards || []
     // 只处理：有图片 且 还没有已完成视频 的分镜
     const todo = boards.filter((sb) => {
@@ -4153,43 +4578,63 @@ async function startBatchVideoGeneration() {
       return
     }
     batchVideoProgress.value = { current: 0, total: todo.length, failed: 0 }
-    for (let i = 0; i < todo.length; i++) {
-      if (batchVideoStopping.value) { ElMessage.info('批量生成已停止'); break }
-      batchVideoProgress.value = { ...batchVideoProgress.value, current: i + 1 }
-      const sb = todo[i]
-      if (!getSbFirstFrameUrl(sb)) continue
-      try {
-        const firstFrameUrl = await getMainImageUrlForVideo(sb)
-        const absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
-        const res = await videosAPI.create({
-          drama_id: dramaId.value,
-          storyboard_id: sb.id,
-          prompt: sb.video_prompt,
-          image_url: absoluteUrl || undefined,
-          reference_image_urls: absoluteUrl ? [absoluteUrl] : undefined,
-          style: getSelectedStyle(),
-          aspect_ratio: projectAspectRatio.value,
-          resolution: videoResolution.value || undefined,
-          duration: videoClipDuration.value || undefined,
-        })
-        if (res?.task_id) {
-          const pollRes = await pollTask(res.task_id, () => loadStoryboardMedia())
-          if (pollRes?.status === 'failed') {
-            batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
-            batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
-          }
-        } else {
-          await loadStoryboardMedia()
+    const videoConcurrency = pipelineVideoConcurrency.value || 2
+    let videoDoneCount = 0
+
+    let videoQueueIdx = 0
+    const videoWorker = async () => {
+      while (videoQueueIdx < todo.length) {
+        if (batchVideoStopping.value) break
+        const sb = todo[videoQueueIdx++]
+        if (!getSbFirstFrameUrl(sb)) {
+          videoDoneCount++
+          batchVideoProgress.value = { ...batchVideoProgress.value, current: videoDoneCount }
+          continue
         }
-      } catch (e) {
-        batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
-        batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
+        try {
+          // 批量生成时清除手动指定的视频，确保合成时使用最新生成记录
+          storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
+          if (sbSelectedVideoId.value[sb.id] != null) {
+            const next = { ...sbSelectedVideoId.value }
+            delete next[sb.id]
+            sbSelectedVideoId.value = next
+          }
+          const firstFrameUrl = await getMainImageUrlForVideo(sb)
+          const absoluteUrl = toAbsoluteImageUrl(firstFrameUrl)
+          const res = await videosAPI.create({
+            drama_id: dramaId.value,
+            storyboard_id: sb.id,
+            prompt: sb.video_prompt,
+            image_url: absoluteUrl || undefined,
+            reference_image_urls: absoluteUrl ? [absoluteUrl] : undefined,
+            style: getSelectedStyle(),
+            aspect_ratio: projectAspectRatio.value,
+            resolution: videoResolution.value || undefined,
+            duration: videoClipDuration.value || undefined,
+          })
+          if (res?.task_id) {
+            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+            if (pollRes?.status === 'failed') {
+              batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
+              batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
+            }
+          } else {
+            await loadSingleStoryboardMedia(sb.id)
+          }
+        } catch (e) {
+          batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
+          batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
+        }
+        videoDoneCount++
+        batchVideoProgress.value = { ...batchVideoProgress.value, current: videoDoneCount }
       }
-      if (!batchVideoStopping.value) await new Promise((r) => setTimeout(r, 600))
     }
+    await Promise.allSettled(Array.from({ length: Math.min(videoConcurrency, todo.length) }, () => videoWorker()))
     if (!batchVideoStopping.value) {
       if (batchVideoProgress.value.failed === 0) ElMessage.success(`分镜视频批量生成完成（共 ${todo.length} 条）`)
       else ElMessage.warning(`批量完成，${batchVideoProgress.value.failed}/${todo.length} 条失败`)
+    } else {
+      ElMessage.info('批量生成已停止')
     }
   } finally {
     batchVideoRunning.value = false
@@ -4388,14 +4833,14 @@ async function startOneClickPipeline() {
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
   pipelineStepIndex.value = 0
-  pipelineActiveTasks.value = new Set()
+  pipelineActiveTasks.clear()
   pipelineRunning.value = true
   pipelinePaused.value = false
   try {
     await runOneClickPipeline()
   } finally {
     pipelineRunning.value = false
-    pipelineActiveTasks.value = new Set()
+    pipelineActiveTasks.clear()
   }
 }
 
@@ -4497,13 +4942,26 @@ async function runOneClickPipeline() {
     let boards = store.storyboards || []
     if (boards.length === 0) {
       setPipelineStep(4, '生成分镜脚本...')
+      // 与手动生成一样，每 2 秒刷新一次分镜列表，让已解析的分镜逐步显示
+      const sbRefreshTimer = setInterval(refreshStoryboardsOnly, 2000)
       try {
-        const res = await dramaAPI.generateStoryboard(episodeId, { style, aspect_ratio: projectAspectRatio.value })
+        const res = await dramaAPI.generateStoryboard(episodeId, {
+          style,
+          aspect_ratio: projectAspectRatio.value,
+          storyboard_count: storyboardCount.value || undefined,
+          video_duration: videoDuration.value || undefined,
+        })
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
           const result = await pollTaskWithPause(taskId, () => loadDrama())
-          if (result?.paused) { await waitForResume(); return }
-          if (result?.error) { addPipelineError('生成分镜', result.error); return }
+          if (result?.paused) { clearInterval(sbRefreshTimer); await waitForResume(); return }
+          if (result?.error) {
+            // 任务失败，但后端可能已保存了部分分镜，确保最新状态显示出来再停止
+            await loadDrama()
+            addPipelineError('生成分镜', result.error)
+            clearInterval(sbRefreshTimer)
+            return
+          }
           if (result?.result?.truncated) {
             sbTruncatedWarning.value = true
             sbTruncatedDismissed.value = false
@@ -4513,8 +4971,10 @@ async function runOneClickPipeline() {
         await pipelineRest()
       } catch (e) {
         addPipelineError('生成分镜', e.message || String(e))
+        clearInterval(sbRefreshTimer)
         return
       }
+      clearInterval(sbRefreshTimer)
       await loadStoryboardMedia()
       boards = store.storyboards || []
     } else {
@@ -4661,16 +5121,16 @@ async function runOneClickPipeline() {
             const res = await imagesAPI.create({
               storyboard_id: sb.id,
               drama_id: dramaIdVal,
-              prompt: sb.image_prompt || sb.description || '',
+              prompt: sb.polished_prompt || sb.image_prompt || sb.description || '',
               model: undefined,
               style,
               aspect_ratio: projectAspectRatio.value || '16:9',
             })
             if (res?.task_id) {
-              const result = await pollTaskWithPause(res.task_id, () => loadStoryboardMedia())
+              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
-            } else await loadStoryboardMedia()
+            } else await loadSingleStoryboardMedia(sb.id)
           })
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
@@ -4721,10 +5181,10 @@ async function runOneClickPipeline() {
               duration: videoClipDuration.value || undefined,
             })
             if (res?.task_id) {
-              const result = await pollTaskWithPause(res.task_id, () => loadStoryboardMedia())
+              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
-            } else await loadStoryboardMedia()
+            } else await loadSingleStoryboardMedia(sb.id)
           })
           if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
         } finally {
@@ -4762,14 +5222,14 @@ async function startRepairPipeline() {
   if (!currentEpisodeId.value || pipelineRunning.value) return
   pipelineErrorLog.value = []
   pipelineCurrentStep.value = ''
-  pipelineActiveTasks.value = new Set()
+  pipelineActiveTasks.clear()
   pipelineRunning.value = true
   pipelinePaused.value = false
   try {
     await runRepairPipeline()
   } finally {
     pipelineRunning.value = false
-    pipelineActiveTasks.value = new Set()
+    pipelineActiveTasks.clear()
   }
 }
 
@@ -4940,7 +5400,11 @@ async function runRepairPipeline() {
       await checkPause()
       pipelineCurrentStep.value = '正在生成分镜...'
       try {
-        const res = await dramaAPI.generateStoryboard(episodeId, { aspect_ratio: projectAspectRatio.value })
+        const res = await dramaAPI.generateStoryboard(episodeId, {
+          aspect_ratio: projectAspectRatio.value,
+          storyboard_count: storyboardCount.value || undefined,
+          video_duration: videoDuration.value || undefined,
+        })
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
           const result = await pollTaskWithPause(taskId, () => loadDrama())
@@ -4968,16 +5432,16 @@ async function runRepairPipeline() {
           const res = await imagesAPI.create({
             storyboard_id: sb.id,
             drama_id: dramaIdVal,
-            prompt: sb.image_prompt || sb.description || '',
+            prompt: sb.polished_prompt || sb.image_prompt || sb.description || '',
             model: undefined,
             style,
             aspect_ratio: projectAspectRatio.value || '16:9',
           })
           if (res?.task_id) {
-            const result = await pollTaskWithPause(res.task_id, () => loadStoryboardMedia())
+            const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
             if (result?.paused) return { paused: true }
             if (result?.error) throw new Error(result.error)
-          } else await loadStoryboardMedia()
+          } else await loadSingleStoryboardMedia(sb.id)
         })
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
       }, { getLabel: (sb) => '分镜图 #' + (sb.storyboard_number ?? sb.id) })
@@ -5010,10 +5474,10 @@ async function runRepairPipeline() {
             duration: videoClipDuration.value || undefined,
           })
           if (res?.task_id) {
-            const result = await pollTaskWithPause(res.task_id, () => loadStoryboardMedia())
+            const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
             if (result?.paused) return { paused: true }
             if (result?.error) throw new Error(result.error)
-          } else await loadStoryboardMedia()
+          } else await loadSingleStoryboardMedia(sb.id)
         })
         if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
       }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
@@ -5592,22 +6056,20 @@ html.light .card:hover {
   color: #fafafa;
 }
 html.light .section-title { color: #18181b; }
+.pipeline-section {
+  padding: 12px 16px !important;
+}
 .one-click-actions {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 16px;
-  padding: 12px 14px;
-  background: var(--el-fill-color-lighter);
-  border-radius: 8px;
-  border: 1px solid var(--el-border-color-lighter);
   flex-wrap: wrap;
 }
 .one-click-label {
-  font-size: 13px;
-  color: var(--el-text-color-secondary);
+  font-size: 14px;
+  color: var(--el-text-color-primary);
   white-space: nowrap;
-  font-weight: 500;
+  font-weight: 600;
 }
 .pipeline-status {
   margin-top: 12px;
@@ -6269,7 +6731,7 @@ html.light .segment-index-badge { color: #7c3aed; background: rgba(124,58,237,0.
 
 .storyboard-row {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 0;
   margin-bottom: 20px;
   background: rgba(28, 28, 30, 0.8);
@@ -6296,34 +6758,85 @@ html.light .storyboard-row:hover {
   box-shadow: 0 4px 20px rgba(139, 92, 246, 0.1);
 }
 .storyboard-row:last-child { margin-bottom: 0; }
-.sb-num-badge {
-  position: absolute;
-  left: 12px;
-  top: 12px;
-  height: 24px;
-  font-size: 12px;
-  font-weight: 600;
+/* ── 分镜控制栏（卡片外，缩进） ── */
+.sb-ctrl-bar {
   display: flex;
-  gap: 20px;
-  z-index: 1;
+  align-items: center;
+  gap: 6px;
+  margin-left: 32px;
+  margin-bottom: 4px;
+  height: 26px;
 }
-.sb-num-badge span{
+.sb-ctrl-num {
   background: var(--el-color-primary);
-  width: 24px;
-  height:100%;
   color: #fff;
-  border-radius: 6px;
+  border-radius: 5px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.sb-ctrl-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #e4e4e7;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html.light .sb-ctrl-title {
+  color: #000;
+}
+.sb-ctrl-btn.el-button {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+.sb-ctrl-config-btn.el-button {
+  border-color: rgba(139,92,246,0.45);
+  color: #a78bfa;
+  background: rgba(139,92,246,0.08);
+}
+.sb-ctrl-config-btn.el-button:hover {
+  border-color: #8b5cf6;
+  color: #fff;
+  background: rgba(139,92,246,0.6);
+}
+html.light .sb-ctrl-config-btn.el-button {
+  border-color: rgba(124,58,237,0.35);
+  color: #7c3aed;
+  background: rgba(124,58,237,0.06);
+}
+html.light .sb-ctrl-config-btn.el-button:hover {
+  border-color: #7c3aed;
+  color: #fff;
+  background: #7c3aed;
+}
+.sb-ctrl-delete {
+  margin-left: auto;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+  height: 22px;
+  padding: 0 4px;
+}
+.sb-ctrl-bar:hover .sb-ctrl-delete {
+  opacity: 1;
 }
 .sb-panel {
   flex: 1;
   min-width: 0;
   padding: 12px 14px;
-  border-right: 1px solid #27272a;
+  border-right: 1px solid rgba(63,63,70,0.9);
   display: flex;
   flex-direction: column;
+}
+html.light .sb-panel {
+  border-right-color: rgba(139,92,246,0.1);
 }
 .sb-panel:last-child { border-right: none; }
 .sb-panel-title {
@@ -6345,7 +6858,7 @@ html.light .storyboard-row:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sb-script { padding-top: 36px; }
+.sb-script { padding-top: 10px; }
 .sb-script-row {
   display: flex;
   gap: 8px;
@@ -6437,10 +6950,11 @@ html.light .storyboard-row:hover {
 }
 .sb-image-area {
   flex: 1;
-  min-height: 140px;
-  max-height: 220px;
-  background: #27272a;
-  border-radius: 8px;
+  min-height: 200px;
+  max-height: 320px;
+  background: linear-gradient(145deg, #18181b 0%, #1f1f23 60%, #1a1a1f 100%);
+  border: 1px dashed rgba(139,92,246,0.22);
+  border-radius: 10px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -6448,6 +6962,17 @@ html.light .storyboard-row:hover {
   gap: 8px;
   overflow: hidden;
   position: relative;
+  transition: border-color 0.2s, background 0.2s;
+}
+.sb-image-area:hover {
+  border-color: rgba(139,92,246,0.45);
+}
+html.light .sb-image-area {
+  background: linear-gradient(145deg, #f5f3ff 0%, #ede9fe 100%);
+  border-color: rgba(124,58,237,0.2);
+}
+html.light .sb-image-area:hover {
+  border-color: rgba(124,58,237,0.45);
 }
 .sb-image-area--dragover {
   outline: 2px dashed var(--el-color-primary);
@@ -6580,20 +7105,29 @@ html.light .storyboard-row:hover {
 }
 .sb-video-area {
   flex: 1;
-  min-height: 140px;
-  background: #27272a;
-  border-radius: 8px;
+  min-height: 200px;
+  background: linear-gradient(145deg, #18181b 0%, #1f1f23 60%, #1a1a1f 100%);
+  border: 1px dashed rgba(139,92,246,0.22);
+  border-radius: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: border-color 0.2s;
+}
+html.light .sb-video-area {
+  background: linear-gradient(145deg, #f5f3ff 0%, #ede9fe 100%);
+  border-color: rgba(124,58,237,0.2);
 }
 .sb-video-placeholder {
   color: #71717a;
   font-size: 0.9rem;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   text-align: center;
-  padding: 12px;
+  padding: 16px;
+}
+html.light .sb-video-placeholder {
+  color: #7c3aed;
 }
 .sb-video-generating-text {
   display: flex;
@@ -6620,6 +7154,62 @@ html.light .storyboard-row:hover {
   max-height: 240px;
   border-radius: 8px;
 }
+.sb-video-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-shrink: 0;
+  padding-top: 6px;
+}
+.sb-video-regenerating-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: #a78bfa;
+}
+.sb-videos-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.sb-video-thumb {
+  position: relative;
+  width: 72px;
+  height: 48px;
+  border-radius: 5px;
+  overflow: hidden;
+  cursor: pointer;
+  border: 1.5px solid transparent;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+.sb-video-thumb:hover {
+  border-color: #a855f7;
+}
+.sb-video-thumb-player {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.sb-video-thumb-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0,0,0,0.55);
+  color: #e4e4e7;
+  font-size: 0.65rem;
+  text-align: center;
+  padding: 1px 0;
+  pointer-events: none;
+}
 .sb-video-prompt-label {
   display: flex;
   align-items: center;
@@ -6635,6 +7225,16 @@ html.light .storyboard-row:hover {
   flex-shrink: 0;
 }
 .sb-video-prompt-label > span:not(.sb-dot) { font-size: 0.85rem; color: #e4e4e7; }
+.sb-video-params-bar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0;
+}
+.sb-video-params-bar .sb-video-prompt-text {
+  flex: 1;
+  min-width: 0;
+}
 .sb-video-prompt-row {
   display: flex;
   align-items: flex-start;
@@ -6644,6 +7244,9 @@ html.light .storyboard-row:hover {
 .sb-video-prompt-row .sb-video-prompt-text {
   flex: 1;
   min-width: 0;
+}
+.vp-dialog-form .el-form-item {
+  margin-bottom: 12px;
 }
 .sb-video-prompt-text {
   font-size: 0.85rem;
@@ -6668,11 +7271,13 @@ html.light .storyboard-row:hover {
 .sb-prompt-label .sb-dot { flex-shrink: 0; }
 .sb-prompt-label > span:not(.sb-dot) { font-size: 0.85rem; color: #e4e4e7; }
 .sb-prompt-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
-.sb-prompt-row .sb-prompt-text { flex: 1; min-width: 0; font-size: 0.85rem; color: #a1a1aa; line-height: 1.4; }
+.sb-prompt-row .sb-prompt-text { flex: 1; min-width: 0; font-size: 0.85rem; color: #a1a1aa; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .sb-image-prompt-edit .el-textarea { margin-bottom: 6px; }
 .sb-prompt-edit-actions { display: flex; gap: 8px; }
 .sb-video-fields-collapse { margin: 8px 0; }
 .sb-video-fields-collapse .el-collapse-item__header { font-size: 0.9rem; }
+.sb-prompt-section-title { font-size: 0.9rem; font-weight: 600; color: #e4e4e7; margin-bottom: 8px; }
+.sb-prompt-dialog-form .el-form-item { margin-bottom: 10px; }
 .sb-collapse-title { color: #a1a1aa; }
 .sb-video-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; padding: 8px 0; }
 .sb-field { display: flex; flex-direction: column; gap: 4px; }

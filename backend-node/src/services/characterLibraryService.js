@@ -185,6 +185,13 @@ function uploadCharacterImage(db, log, characterId, imageUrl) {
   return { ok: true };
 }
 
+/** local_path → image_url 兜底：避免旧库 NOT NULL 约束报错 */
+function resolveImageUrl(image_url, local_path) {
+  if (image_url && !image_url.startsWith('data:')) return image_url;
+  if (local_path) return `/static/${local_path}`;
+  return image_url || null;
+}
+
 // 加入本剧资源库（带 drama_id）
 function addCharacterToLibrary(db, log, characterId, category) {
   const charRow = db.prepare('SELECT * FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(characterId));
@@ -193,10 +200,11 @@ function addCharacterToLibrary(db, log, characterId, category) {
   if (!drama) return { ok: false, error: 'unauthorized' };
   if (!charRow.image_url && !charRow.local_path) return { ok: false, error: '角色还没有形象图片' };
   const now = new Date().toISOString();
+  const imageUrl = resolveImageUrl(charRow.image_url, charRow.local_path);
   const info = db.prepare(
     `INSERT INTO character_libraries (drama_id, name, image_url, local_path, description, source_type, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, 'character', ?, ?)`
-  ).run(charRow.drama_id, charRow.name, charRow.image_url || null, charRow.local_path || null, charRow.description || null, now, now);
+  ).run(charRow.drama_id, charRow.name, imageUrl, charRow.local_path || null, charRow.description || null, now, now);
   log.info('Character added to drama library', { character_id: characterId, drama_id: charRow.drama_id, library_item_id: info.lastInsertRowid });
   return { ok: true, item: getLibraryItem(db, String(info.lastInsertRowid)) };
 }
@@ -207,10 +215,11 @@ function addCharacterToMaterialLibrary(db, log, characterId) {
   if (!charRow) return { ok: false, error: 'character not found' };
   if (!charRow.image_url && !charRow.local_path) return { ok: false, error: '角色还没有形象图片' };
   const now = new Date().toISOString();
+  const imageUrl = resolveImageUrl(charRow.image_url, charRow.local_path);
   const info = db.prepare(
     `INSERT INTO character_libraries (drama_id, name, image_url, local_path, description, source_type, created_at, updated_at)
      VALUES (NULL, ?, ?, ?, ?, 'character', ?, ?)`
-  ).run(charRow.name, charRow.image_url || null, charRow.local_path || null, charRow.description || null, now, now);
+  ).run(charRow.name, imageUrl, charRow.local_path || null, charRow.description || null, now, now);
   log.info('Character added to material library (global)', { character_id: characterId, library_item_id: info.lastInsertRowid });
   return { ok: true, item: getLibraryItem(db, String(info.lastInsertRowid)) };
 }

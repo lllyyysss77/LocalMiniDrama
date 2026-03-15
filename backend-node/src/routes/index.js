@@ -218,11 +218,15 @@ function setupRouter(cfg, db, log) {
   // ---------- storyboards ----------
   r.get('/storyboards/episode/:episode_id/generate', storyboards.episodeStoryboardsGenerate);
   r.post('/storyboards', storyboards.create);
+  r.post('/storyboards/:id/insert-before', storyboards.insertBefore);
+  r.get('/storyboards/:id', storyboards.getOne);
   r.put('/storyboards/:id', storyboards.update);
   r.delete('/storyboards/:id', storyboards.delete);
   r.post('/storyboards/:id/props', prop.associateProps);
   r.post('/storyboards/:id/frame-prompt', storyboards.framePrompt);
   r.get('/storyboards/:id/frame-prompts', storyboards.framePromptsGet);
+  r.post('/storyboards/:id/polish-prompt', storyboards.polishPrompt);
+  r.post('/storyboards/batch-infer-params', storyboards.batchInferParams);
 
   // ---------- audio ----------
   r.post('/audio/extract', audio.extract);

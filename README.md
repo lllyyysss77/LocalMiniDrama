@@ -6,7 +6,7 @@
 
 *LocalMiniDrama · AI-powered short drama creator*
 
-[![version](https://img.shields.io/badge/version-1.2.0-blue?style=flat-square)](../../releases)
+[![version](https://img.shields.io/badge/version-1.2.1-blue?style=flat-square)](../../releases)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-Windows-lightgrey?style=flat-square)](#)
 [![stack](https://img.shields.io/badge/Vue3%20%2B%20Node.js%20%2B%20Electron-informational?style=flat-square)](#)
@@ -42,7 +42,40 @@
     <td align="center"><img src="项目截图/武侠.png" alt="剧集管理页" width="480"/><br/><sub>剧集管理 · 分集 + 资源库</sub></td>
     <td align="center"><img src="项目截图/武侠分镜.png" alt="分镜编辑页" width="480"/><br/><sub>分镜制作 · 图片 + 视频一键生成</sub></td>
   </tr>
+  <tr>
+    <td align="center"><img src="项目截图/新版本4宫格分镜.png" alt="角色管理页" width="480"/><br/><sub>角色生成 · AI 自动提取并生成角色形象图</sub></td>
+    <td align="center"><img src="项目截图/专业分镜.png" alt="专业分镜参数" width="480"/><br/><sub>分镜制作 · 专业视频参数（景别 / 运镜 / 灯光 / 景深）</sub></td>
+  </tr>
+  <tr>
+    <td align="center" colspan="2"><img src="项目截图/本剧场景库.png" alt="本剧场景库" width="720"/><br/><sub>场景库 · 一键「加入本集」，复用已有场景素材</sub></td>
+  </tr>
 </table>
+
+---
+
+## 🎬 AI 生成实拍效果
+
+> 以下 3 段视频由**本软件自动工作流选择即梦 1.0**（字节旗下图生视频模型）生成，展示连续分镜下角色外貌一致性的保持效果。  
+> 三个分镜均来自同一剧集，主角形象、服装、整体风格全程稳定统一，充分验证本工具的分镜参考图传递机制。
+
+<table>
+  <tr>
+    <td align="center">
+      <video src="项目截图/1.mp4" controls width="300" style="border-radius:8px"></video><br/>
+      <sub>分镜 1 · 角色出场，即梦 1.0 生成</sub>
+    </td>
+    <td align="center">
+      <video src="项目截图/2.mp4" controls width="300" style="border-radius:8px"></video><br/>
+      <sub>分镜 2 · 连续镜头，角色服装保持一致</sub>
+    </td>
+    <td align="center">
+      <video src="项目截图/3.mp4" controls width="300" style="border-radius:8px"></video><br/>
+      <sub>分镜 3 · 不同景别，人物外貌高度统一</sub>
+    </td>
+  </tr>
+</table>
+
+> 💡 **即梦 1.0 仅为演示版本**，本工具同时支持火山引擎豆包 Seedance、通义万相、Vidu、可灵 Kling 等多家视频模型，更高版本模型效果更佳。
 
 ---
 
@@ -153,6 +186,7 @@ npm run dev
 |--------|:--------:|:--------:|:--------:|
 | 阿里云 DashScope（通义） | ✅ | ✅ | ✅ |
 | 火山引擎 Volcengine（豆包） | ✅ | ✅ | ✅ |
+| 可灵 Kling AI | — | ✅ | ✅ |
 | Google Gemini（Imagen / Veo） | — | ✅ | ✅ |
 | Vidu 生数科技 | — | — | ✅ |
 | NanoBanana（含代理） | — | ✅ | — |
@@ -203,7 +237,13 @@ LocalMiniDrama/
 
 查看完整更新记录 → **[CHANGELOG](docs/changelog.md)**
 
-**最新版 v1.1.15 亮点：**
+**最新版 v1.2.1 亮点：**
+- 🆕 **可灵 Kling AI 接入**：新增可灵图片（kling-image / kling-omni-image）与视频（kling-video / kling-omni-video / kling-motion-control）协议支持，AI 配置页可直接选择
+- 🆕 **场景/道具"加入本集"**：场景库与道具库新增"加入本集"按钮，与角色库体验一致，一键复用素材
+- 🆕 **视频历史记录与主视频选择**：视频重新生成后自动保留历史版本，缩略图条带一览，点击切换主视频；合成视频时自动使用当前选定版本
+- 🔧 **合成视频主视频修复**：修复合成视频时始终取最新生成记录、忽略用户已选定历史视频的问题
+
+**v1.1.15 亮点：**
 - 🆕 **多集剧本生成**：故事生成新增"生成集数"选项（1-6 集），AI 一次性输出多集完整剧本并自动保存，默认选中第 1 集
 - 🆕 **AI 并发生成**：一键生成支持图片/视频并发（默认各 3 路），同时处理多个角色/场景/分镜任务，显示实时任务进度
 - 🆕 **可视化风格选择器**：生成风格下拉框升级为带缩略图的图文选择器，直观预览各类画风

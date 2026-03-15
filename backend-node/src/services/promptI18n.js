@@ -126,6 +126,8 @@ function getStoryboardSystemPrompt(cfg) {
    - shot_type: Shot type (extreme long shot/long shot/medium shot/close-up/extreme close-up)
    - camera_angle: Camera angle (eye-level/low-angle/high-angle/side/back)
    - camera_movement: Camera movement (fixed/push/pull/pan/follow/tracking)
+   - lighting_style: Lighting style — choose ONE: natural/front/side/backlit/top/under/soft/dramatic/golden_hour/blue_hour/night/neon
+   - depth_of_field: Depth of field — choose ONE: extreme_shallow/shallow/medium/deep (close-up → shallow/extreme_shallow; wide shot → deep)
    - action: Action description
    - result: Visual result of the action
    - dialogue: Character dialogue or narration (if any)
@@ -198,6 +200,8 @@ function getStoryboardSystemPrompt(cfg) {
    - shot_type：景别（大远景/远景/中景/近景/特写）
    - camera_angle：机位角度（平视/仰视/俯视/侧面/背面）
    - camera_movement：运镜方式（固定/推镜/拉镜/摇镜/跟镜/移镜）
+   - lighting_style：灯光风格 — 从以下选一个填入：natural/front/side/backlit/top/under/soft/dramatic/golden_hour/blue_hour/night/neon（根据 time 和 atmosphere 判断；夜晚→night，黄昏→golden_hour，室内暖光→soft，强情绪→dramatic，逆光→backlit）
+   - depth_of_field：景深 — 从以下选一个填入：extreme_shallow/shallow/medium/deep（特写/近景→shallow，中景→medium，远景/大远景→deep）
    - action：动作描述
    - result：动作完成后的画面结果
    - dialogue：角色对话或旁白（如有）
@@ -1073,24 +1077,73 @@ function getRoleGenerateImagePrompt() {
  * 供 imageService.js Step3.5 调用，结果回写 image_generations.prompt
  */
 function getImagePolishPrompt() {
-  return `You are an expert image prompt engineer specializing in cinematic storyboard visuals.
+  return `You are an expert image prompt engineer specializing in AI image generation for cinematic storyboards.
 
-Your task: Transform a storyboard description into an optimized image generation prompt.
+Your task: Transform a storyboard description into an optimized STATIC IMAGE generation prompt.
+
+CRITICAL RULES:
+1. Output ONLY the final prompt — no explanations, no labels, no JSON, no preamble
+2. STATIC SINGLE FRAME — describe ONE frozen millisecond only. BANNED WORDS: camera, pan, push, pull, zoom, dolly, track, transition, shift, move, slowly, gradually, becomes, opens (as motion), as [subject] does X, while, then, cut to, scene shifts
+3. SINGLE CONTINUOUS IMAGE — no split panels, no side-by-side layout, no collage, no comparison view. All characters share one unified scene space
+4. Length: 50–100 words
+5. Structure: [Shot framing] + [Scene/environment] + [Characters' frozen poses/expressions] + [Lighting at this exact instant] + [Atmosphere] + [Style tokens]
+6. Describe characters' POSE and EXPRESSION at peak moment — not their motion arc
+7. Preserve character names exactly as listed in ASSETS (they are reference image anchors)
+8. End with style tokens from STYLE field if provided
+9. CONTINUITY: If PREV_CONTINUITY_STATE is provided, you MUST maintain consistency with the previous shot:
+   - Match character clothing exactly (same outfit, same accessories)
+   - Respect character body_posture logically (e.g. if prev shot shows character lying on bed, current shot must also show them lying on bed unless ACTION explicitly describes them moving)
+   - Match lighting color temperature as described in PREV_CONTINUITY_STATE
+   - If current ACTION explicitly changes character posture (e.g. "stands up", "sits down", "rises"), that override takes precedence over body_posture
+
+Input format:
+PROMPT: <original storyboard image prompt>
+ACTION: <what characters are doing in this frozen moment>
+DIALOGUE: <spoken dialogue — use for context only, do not quote it>
+RESULT: <visual outcome visible in the frame>
+ATMOSPHERE: <lighting and mood>
+SHOT_TYPE: <framing type>
+STYLE: <art style>
+ASSETS: <character/scene names with reference images>
+PREV_CONTINUITY_STATE: <JSON snapshot of character states from previous shot — clothing, position, expression>
+CONTEXT_PREV: <previous shot action summary for continuity>
+CONTEXT_NEXT: <next shot summary — ignore for image, relevant only for mood>`;
+}
+
+/**
+ * 从已完成的 polished_prompt 中提取连戏状态快照（角色服装/位置/表情）
+ * 结果为 JSON 字符串，存入 storyboards.continuity_snapshot
+ */
+function getContinuitySnapshotPrompt() {
+  return `You are a script supervisor (continuity analyst) for a film production.
+
+Given a completed image generation prompt for a storyboard shot, extract a structured continuity state snapshot.
+
+Output ONLY a valid JSON object — no explanations, no markdown fences.
+
+JSON schema:
+{
+  "characters": {
+    "<character_name>": {
+      "body_posture": "<BODY POSTURE only — e.g. 'lying on bed', 'sitting on edge of bed', 'standing', 'kneeling on floor', 'crouching'. NEVER write camera framing here (no 'close-up', 'extreme close-up', etc). If shot is close-up but context implies lying/sitting, infer from scene context>",
+      "clothing": "<clothing description, e.g. 'white hanfu robe, loosened collar'>",
+      "expression": "<facial expression, e.g. 'pained, eyes closed', 'tearful, concerned'>",
+      "props": ["<prop1>", "<prop2>"]
+    }
+  },
+  "lighting": "<color temperature and direction, e.g. 'warm amber sidelight from window'>",
+  "location": "<scene location, e.g. 'ancient Chinese bedroom, daytime'>"
+}
 
 Rules:
-1. Output ONLY the optimized prompt — no explanations, no labels, no JSON
-2. Length: 60–120 words (concise but rich in visual detail)
-3. Structure: [Shot framing] + [Scene/environment] + [Character(s) action/pose] + [Lighting] + [Atmosphere/mood] + [Style]
-4. Use vivid, concrete visual language — painterly, cinematic, photorealistic
-5. Include: camera angle, depth of field, lighting direction, color palette hint
-6. Preserve: character names as provided (they map to reference images)
-7. Avoid: abstract emotions ("feels sad"), narrative descriptions ("she thinks about"), plot summaries
-8. End with style tokens if a style was provided
+- Only include characters that are explicitly described in the prompt
+- Keep each field concise (≤15 words)
+- body_posture MUST describe physical body state, NOT camera shot type. Infer from scene context if needed (e.g. bedroom scene + lying character → 'lying on bed')
+- If a detail truly cannot be determined even by inference, use null
 
-Input format you will receive:
-PROMPT: <original storyboard prompt>
-STYLE: <art style if any>
-ASSETS: <character/scene names mapped to reference images>`;
+Input:
+PROMPT: <the completed image generation prompt>
+ASSETS: <character names present in this shot>`;
 }
 
 /**
@@ -1170,6 +1223,7 @@ module.exports = {
   getScenePolishPrompt,
   getSceneGenerateImagePrompt,
   getImagePolishPrompt,
+  getContinuitySnapshotPrompt,
   getIdentityAnchorsPrompt,
   getPropPolishPrompt,
   loadOverridesIntoCache,

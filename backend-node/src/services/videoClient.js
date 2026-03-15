@@ -14,6 +14,7 @@ function inferVideoProtocol(provider) {
   if (p === 'gemini' || p === 'google') return 'gemini';
   if (p === 'volces' || p === 'volcengine' || p === 'volc') return 'volcengine';
   if (p === 'vidu') return 'vidu';
+  if (p === 'kling' || p === 'klingai') return 'kling';
   return 'openai';
 }
 
@@ -117,6 +118,161 @@ function parseDashScopeVideoUrl(data) {
     }
   }
   return null;
+}
+
+/**
+ * 调用可灵（Kling AI）视频生成 API（异步任务，返回 task_id）
+ * 支持模型：kling-video / kling-omni-video / kling-motion-control
+ * 接口：
+ *   T2V  → POST /v1/videos/text2video      （无参考图）
+ *   I2V  → POST /v1/videos/image2video     （有参考图/首帧）
+ *   MC   → POST /v1/videos/motion-control  （kling-motion-control 模型，需首帧图）
+ * task_id 编码格式：`t2v:xxx` / `i2v:xxx` / `mc:xxx` 用于轮询时还原正确的查询端点
+ * 认证：Authorization: Bearer {api_key}
+ */
+async function callKlingVideoApi(config, log, opts) {
+  const {
+    prompt, model, duration, aspect_ratio, image_url,
+    files_base_url, storage_local_path, video_gen_id,
+  } = opts;
+
+  const base = (config.base_url || 'https://api.klingai.com').replace(/\/$/, '');
+  const apiKey = config.api_key || '';
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: 'Bearer ' + apiKey,
+  };
+
+  const m = model || 'kling-video';
+  const isMotionControl = m === 'kling-motion-control';
+
+  // 处理图片 URL（本地路径 → base64 转换）
+  let imageInput = null;
+  const rawImgUrl = (image_url || '').trim();
+  if (rawImgUrl) {
+    if (rawImgUrl.startsWith('data:')) {
+      imageInput = rawImgUrl;
+    } else if (/localhost|127\.0\.0\.1/i.test(rawImgUrl) && storage_local_path) {
+      const baseUrl = (files_base_url || '').replace(/\/$/, '');
+      const afterStatic = rawImgUrl.split('/static/')[1] || (baseUrl ? rawImgUrl.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
+      const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
+      if (relPath) {
+        const filePath = require('path').join(storage_local_path, relPath);
+        try {
+          if (require('fs').existsSync(filePath)) {
+            const buf = require('fs').readFileSync(filePath);
+            const ext = require('path').extname(filePath).toLowerCase();
+            const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }[ext] || 'image/jpeg';
+            imageInput = 'data:' + mime + ';base64,' + buf.toString('base64');
+            log.info('[Kling视频] 本地图片 → base64', { file: filePath, size_kb: Math.round(buf.length / 1024), video_gen_id });
+          }
+        } catch (e) {
+          log.warn('[Kling视频] 读取本地图片失败', { error: e.message, video_gen_id });
+          imageInput = rawImgUrl;
+        }
+      }
+    } else {
+      imageInput = rawImgUrl;
+    }
+  }
+
+  const hasImage = !!imageInput;
+  const dur = duration ? Number(duration) : 5;
+  const klingDuration = dur <= 5 ? '5' : '10';
+  const ratio = aspect_ratio || '16:9';
+
+  // 根据模型类型 & 是否有图片确定端点
+  let createEp, taskType;
+  if (isMotionControl) {
+    createEp = '/v1/videos/motion-control';
+    taskType = 'mc';
+  } else if (hasImage) {
+    createEp = '/v1/videos/image2video';
+    taskType = 'i2v';
+  } else {
+    createEp = '/v1/videos/text2video';
+    taskType = 't2v';
+  }
+
+  // 允许用户通过 config.endpoint 覆盖默认端点
+  if (config.endpoint) {
+    createEp = config.endpoint.startsWith('/') ? config.endpoint : '/' + config.endpoint;
+  }
+  const createUrl = base + createEp;
+
+  let body;
+  if (taskType === 'i2v' || taskType === 'mc') {
+    body = {
+      model: m,
+      prompt: prompt || '',
+      image: { type: 'url', url: imageInput },
+      duration: klingDuration,
+      cfg_scale: 0.5,
+      callback_url: '',
+    };
+  } else {
+    body = {
+      model: m,
+      prompt: prompt || '',
+      aspect_ratio: ratio,
+      duration: klingDuration,
+      cfg_scale: 0.5,
+      mode: 'std',
+      callback_url: '',
+    };
+  }
+
+  const bodyForLog = {
+    ...body,
+    image: body.image ? { ...body.image, url: body.image.url?.startsWith('data:') ? '(base64)' : body.image.url } : undefined,
+  };
+  log.info('[Kling视频] 发送请求', {
+    url: createUrl, model: m, task_type: taskType,
+    has_image: hasImage, duration: klingDuration, ratio,
+    video_gen_id, body_preview: JSON.stringify(bodyForLog).slice(0, 400),
+  });
+
+  const res = await fetch(createUrl, { method: 'POST', headers, body: JSON.stringify(body) });
+  const raw = await res.text();
+  log.info('[Kling视频] 原始响应', { video_gen_id, status: res.status, raw: raw.slice(0, 500) });
+
+  if (!res.ok) {
+    let errMsg = '可灵视频生成请求失败: ' + res.status;
+    try {
+      const errJson = JSON.parse(raw);
+      const msg = errJson.message || errJson.msg || errJson.error?.message || errJson.error;
+      if (msg) errMsg += ' - ' + String(msg).slice(0, 200);
+    } catch (_) {
+      if (raw) errMsg += ' - ' + raw.slice(0, 200);
+    }
+    return { error: errMsg };
+  }
+
+  let data;
+  try { data = JSON.parse(raw); } catch (e) {
+    return { error: '可灵视频响应格式异常: ' + raw.slice(0, 200) };
+  }
+
+  if (data.code !== undefined && data.code !== 0) {
+    return { error: `可灵错误(${data.code}): ${data.message || '未知错误'}` };
+  }
+
+  // 同步返回视频 URL（极少见，兜底）
+  const directUrl = data?.data?.task_result?.videos?.[0]?.url;
+  if (directUrl) {
+    log.info('[Kling视频] 同步返回视频', { video_gen_id });
+    return { video_url: directUrl };
+  }
+
+  const taskId = data?.data?.task_id;
+  if (!taskId) {
+    return { error: '可灵未返回 task_id: ' + raw.slice(0, 200) };
+  }
+
+  // 在 task_id 中编码任务类型，轮询时用于还原正确的查询端点
+  const encodedTaskId = taskType + ':' + taskId;
+  log.info('[Kling视频] 任务已提交', { video_gen_id, task_id: taskId, task_type: taskType, encoded_id: encodedTaskId });
+  return { task_id: encodedTaskId, status: 'submitted' };
 }
 
 const DASHSCOPE_VIDEO_GENERATION = '/api/v1/services/aigc/video-generation/video-synthesis';
@@ -873,6 +1029,18 @@ async function callVideoApi(db, log, opts) {
     });
   }
 
+  if (protocol === 'kling') {
+    return callKlingVideoApi(config, log, {
+      prompt, model,
+      duration: opts.duration,
+      aspect_ratio,
+      image_url: opts.image_url,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      video_gen_id: opts.video_gen_id,
+    });
+  }
+
   // Veo3 protocol (api_protocol = 'veo3')
   if (protocol === 'veo3') {
     return callVeo3VideoApi(config, log, {
@@ -1007,6 +1175,7 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
   const isGemini = protocol === 'gemini';
   const isVidu = protocol === 'vidu';
   const isSora = protocol === 'sora';
+  const isKling = protocol === 'kling';
   const isVeo3 = protocol === 'veo3';
   const queryUrl = () => buildQueryUrl(config, taskId);
   log.info('[poll] ????', { video_gen_id: videoGenId, task_id: taskId, protocol, poll_url: queryUrl() });
@@ -1014,7 +1183,21 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
     await new Promise((r) => setTimeout(r, intervalMs));
     try {
       let url, headers;
-      if (isGemini) {
+      if (isKling) {
+        // task_id 编码格式：`t2v:xxx` / `i2v:xxx` / `mc:xxx`
+        const klingBase = (config.base_url || 'https://api.klingai.com').replace(/\/$/, '');
+        let actualTaskId = taskId;
+        let videoType = 'text2video';
+        if (taskId.startsWith('i2v:')) { actualTaskId = taskId.slice(4); videoType = 'image2video'; }
+        else if (taskId.startsWith('t2v:')) { actualTaskId = taskId.slice(4); videoType = 'text2video'; }
+        else if (taskId.startsWith('mc:'))  { actualTaskId = taskId.slice(3); videoType = 'motion-control'; }
+        // 若用户配置了 query_endpoint，优先使用
+        let qep = config.query_endpoint || `/v1/videos/${videoType}/{taskId}`;
+        qep = String(qep).replace(/\{taskId\}/gi, encodeURIComponent(actualTaskId)).replace(/\{task_id\}/gi, encodeURIComponent(actualTaskId));
+        if (!qep.startsWith('/')) qep = '/' + qep;
+        url = klingBase + qep;
+        headers = { Authorization: 'Bearer ' + (config.api_key || '') };
+      } else if (isGemini) {
         const base = (config.base_url || 'https://generativelanguage.googleapis.com').replace(/\/$/, '');
         url = `${base}/v1beta/${taskId}`;
         headers = { 'x-goog-api-key': config.api_key || '' };
@@ -1040,6 +1223,31 @@ async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 
         continue;
       }
       const data = JSON.parse(raw);
+
+      if (isKling) {
+        if (data.code !== undefined && data.code !== 0) {
+          const msg = data.message || `可灵错误码: ${data.code}`;
+          log.warn('[Kling poll] API 错误', { video_gen_id: videoGenId, code: data.code, msg });
+          return { error: msg };
+        }
+        const status = (data?.data?.task_status || '').toLowerCase();
+        log.info('[Kling poll] 状态', { video_gen_id: videoGenId, attempt, status, task_id: taskId });
+        if (status === 'succeed') {
+          const videoUrl = data?.data?.task_result?.videos?.[0]?.url;
+          if (videoUrl) {
+            log.info('[Kling poll] 视频生成完成', { video_gen_id: videoGenId, video_url: videoUrl });
+            return { video_url: videoUrl };
+          }
+          return { error: '可灵任务完成但未返回视频地址' };
+        }
+        if (status === 'failed') {
+          const errMsg = data?.data?.task_status_msg || '任务失败';
+          log.warn('[Kling poll] 任务失败', { video_gen_id: videoGenId, error: errMsg });
+          return { error: '可灵视频生成失败: ' + errMsg };
+        }
+        // submitted / processing → 继续轮询
+        continue;
+      }
 
       if (isVeo3) {
         const status = (data.status || data.data?.status || data.task_status || '').toLowerCase();

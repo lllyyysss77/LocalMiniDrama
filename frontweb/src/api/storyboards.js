@@ -1,6 +1,9 @@
 import request from '@/utils/request'
 
 export const storyboardsAPI = {
+  get(id) {
+    return request.get(`/storyboards/${id}`)
+  },
   create(data) {
     return request.post('/storyboards', data)
   },
@@ -12,5 +15,14 @@ export const storyboardsAPI = {
   },
   generateFramePrompt(id, data) {
     return request.post(`/storyboards/${id}/frame-prompt`, data)
+  },
+  polishPrompt(id) {
+    return request.post(`/storyboards/${id}/polish-prompt`, {})
+  },
+  insertBefore(id) {
+    return request.post(`/storyboards/${id}/insert-before`, {})
+  },
+  batchInferParams(episodeId, overwrite = false) {
+    return request.post('/storyboards/batch-infer-params', { episode_id: episodeId, overwrite })
   }
 }

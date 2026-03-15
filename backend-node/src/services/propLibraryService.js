@@ -105,6 +105,12 @@ function deleteLibraryItem(db, log, id) {
   return true;
 }
 
+function resolveImageUrl(image_url, local_path) {
+  if (image_url && !image_url.startsWith('data:')) return image_url;
+  if (local_path) return `/static/${local_path}`;
+  return image_url || null;
+}
+
 // 加入本剧资源库（带 drama_id）
 function addPropToLibrary(db, log, propId) {
   const prop = propService.getById(db, Number(propId));
@@ -113,10 +119,11 @@ function addPropToLibrary(db, log, propId) {
   if (!drama) return { ok: false, error: 'unauthorized' };
   if (!prop.image_url && !prop.local_path) return { ok: false, error: '道具还没有形象图片' };
   const now = new Date().toISOString();
+  const imageUrl = resolveImageUrl(prop.image_url, prop.local_path);
   const info = db.prepare(
     `INSERT INTO prop_libraries (drama_id, name, description, prompt, image_url, local_path, source_type, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, 'prop', ?, ?)`
-  ).run(prop.drama_id, prop.name || '', prop.description || null, prop.prompt || null, prop.image_url || null, prop.local_path || null, now, now);
+  ).run(prop.drama_id, prop.name || '', prop.description || null, prop.prompt || null, imageUrl, prop.local_path || null, now, now);
   log.info('Prop added to drama library', { prop_id: propId, drama_id: prop.drama_id, library_item_id: info.lastInsertRowid });
   return { ok: true, item: getLibraryItem(db, String(info.lastInsertRowid)) };
 }
@@ -127,10 +134,11 @@ function addPropToMaterialLibrary(db, log, propId) {
   if (!prop) return { ok: false, error: 'prop not found' };
   if (!prop.image_url && !prop.local_path) return { ok: false, error: '道具还没有形象图片' };
   const now = new Date().toISOString();
+  const imageUrl = resolveImageUrl(prop.image_url, prop.local_path);
   const info = db.prepare(
     `INSERT INTO prop_libraries (drama_id, name, description, prompt, image_url, local_path, source_type, created_at, updated_at)
      VALUES (NULL, ?, ?, ?, ?, ?, 'prop', ?, ?)`
-  ).run(prop.name || '', prop.description || null, prop.prompt || null, prop.image_url || null, prop.local_path || null, now, now);
+  ).run(prop.name || '', prop.description || null, prop.prompt || null, imageUrl, prop.local_path || null, now, now);
   log.info('Prop added to material library (global)', { prop_id: propId, library_item_id: info.lastInsertRowid });
   return { ok: true, item: getLibraryItem(db, String(info.lastInsertRowid)) };
 }

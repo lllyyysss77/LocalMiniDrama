@@ -1,5 +1,15 @@
 // 对应 Go application/services/drama_service.go
 
+/**
+ * 清理 image_url：如果数据库中存储的是 base64 data URL，则返回 null。
+ * 图片应通过 local_path → /static/{local_path} 访问，base64 不应通过 API 透传（会严重膨胀响应体）。
+ */
+function sanitizeImageUrl(url) {
+  if (!url) return null;
+  if (String(url).startsWith('data:')) return null;
+  return url;
+}
+
 function createDrama(db, log, req) {
   const now = new Date().toISOString();
   const metadataStr = req.metadata ? (typeof req.metadata === 'string' ? req.metadata : JSON.stringify(req.metadata)) : null;
@@ -306,6 +316,8 @@ function rowToStoryboard(r) {
     result: r.result ?? null,
     atmosphere: r.atmosphere,
     image_prompt: r.image_prompt,
+    polished_prompt: r.polished_prompt ?? null,
+    continuity_snapshot: r.continuity_snapshot ?? null,
     video_prompt: r.video_prompt,
       shot_type: r.shot_type ?? null,
       angle: r.angle ?? null,
@@ -313,11 +325,13 @@ function rowToStoryboard(r) {
       angle_v: r.angle_v ?? null,
       angle_s: r.angle_s ?? null,
       movement: r.movement ?? null,
+      lighting_style: r.lighting_style ?? null,
+      depth_of_field: r.depth_of_field ?? null,
       segment_index: r.segment_index ?? 0,
       segment_title: r.segment_title ?? null,
       characters: parseStoryboardCharacters(r.characters),
       composed_image: r.composed_image,
-      image_url: r.image_url ?? null,
+      image_url: sanitizeImageUrl(r.image_url),
       local_path: r.local_path ?? null,
       main_panel_idx: r.main_panel_idx != null ? Number(r.main_panel_idx) : null,
       video_url: r.video_url,
@@ -338,7 +352,7 @@ function rowToCharacter(r) {
     appearance: r.appearance,
     personality: r.personality,
     voice_style: r.voice_style,
-    image_url: r.image_url,
+    image_url: sanitizeImageUrl(r.image_url),
     local_path: r.local_path,
     extra_images: r.extra_images || null,
     reference_images: r.reference_images,
@@ -361,7 +375,7 @@ function rowToScene(r) {
     prompt: r.prompt,
     polished_prompt: r.polished_prompt || null,
     storyboard_count: r.storyboard_count ?? 1,
-    image_url: r.image_url,
+    image_url: sanitizeImageUrl(r.image_url),
     local_path: r.local_path,
     extra_images: r.extra_images || null,
     status: r.status || 'pending',
@@ -379,7 +393,7 @@ function rowToProp(r) {
     type: r.type,
     description: r.description,
     prompt: r.prompt,
-    image_url: r.image_url,
+    image_url: sanitizeImageUrl(r.image_url),
     local_path: r.local_path,
     extra_images: r.extra_images || null,
     error_msg: r.error_msg,
@@ -566,9 +580,20 @@ function saveProgress(db, log, dramaId, req) {
 }
 
 /**
- * 取某分镜的视频地址：优先 video_generations 已完成记录的 video_url/local_path，否则 storyboard.video_url
+ * 取某分镜的视频地址：优先使用用户手动选定的 storyboard.video_url，否则取最新完成的 video_generations 记录
  */
 function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
+  // 优先使用用户选定的主视频（保存在 storyboard.video_url）
+  const sb = db.prepare('SELECT video_url, local_path FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
+  if (sb) {
+    if (sb.video_url && String(sb.video_url).trim()) return sb.video_url;
+    if (sb.local_path && String(sb.local_path).trim() && baseUrl) {
+      const base = (baseUrl || '').replace(/\/$/, '');
+      const p = String(sb.local_path).replace(/^\//, '');
+      return p ? base + '/' + p : null;
+    }
+  }
+  // 兜底：取最新一次完成的视频生成记录
   const vg = db.prepare(
     "SELECT video_url, local_path FROM video_generations WHERE storyboard_id = ? AND status = 'completed' AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1"
   ).get(storyboardId);
@@ -580,8 +605,7 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
       return path ? base + '/' + path : null;
     }
   }
-  const sb = db.prepare('SELECT video_url FROM storyboards WHERE id = ? AND deleted_at IS NULL').get(storyboardId);
-  return sb && sb.video_url && String(sb.video_url).trim() ? sb.video_url : null;
+  return null;
 }
 
 function finalizeEpisode(db, log, episodeId, baseUrl) {

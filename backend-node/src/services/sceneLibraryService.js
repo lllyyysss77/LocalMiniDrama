@@ -108,6 +108,12 @@ function deleteLibraryItem(db, log, id) {
   return true;
 }
 
+function resolveImageUrl(image_url, local_path) {
+  if (image_url && !image_url.startsWith('data:')) return image_url;
+  if (local_path) return `/static/${local_path}`;
+  return image_url || null;
+}
+
 // 加入本剧资源库（带 drama_id）
 function addSceneToLibrary(db, log, sceneId) {
   const scene = sceneService.getSceneById(db, Number(sceneId));
@@ -116,10 +122,11 @@ function addSceneToLibrary(db, log, sceneId) {
   if (!drama) return { ok: false, error: 'unauthorized' };
   if (!scene.image_url && !scene.local_path) return { ok: false, error: '场景还没有形象图片' };
   const now = new Date().toISOString();
+  const imageUrl = resolveImageUrl(scene.image_url, scene.local_path);
   const info = db.prepare(
     `INSERT INTO scene_libraries (drama_id, location, time, prompt, description, image_url, local_path, source_type, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'scene', ?, ?)`
-  ).run(scene.drama_id, scene.location || '', scene.time || null, scene.prompt || null, scene.prompt || null, scene.image_url || null, scene.local_path || null, now, now);
+  ).run(scene.drama_id, scene.location || '', scene.time || null, scene.prompt || null, scene.prompt || null, imageUrl, scene.local_path || null, now, now);
   log.info('Scene added to drama library', { scene_id: sceneId, drama_id: scene.drama_id, library_item_id: info.lastInsertRowid });
   return { ok: true, item: getLibraryItem(db, String(info.lastInsertRowid)) };
 }
@@ -130,10 +137,11 @@ function addSceneToMaterialLibrary(db, log, sceneId) {
   if (!scene) return { ok: false, error: 'scene not found' };
   if (!scene.image_url && !scene.local_path) return { ok: false, error: '场景还没有形象图片' };
   const now = new Date().toISOString();
+  const imageUrl = resolveImageUrl(scene.image_url, scene.local_path);
   const info = db.prepare(
     `INSERT INTO scene_libraries (drama_id, location, time, prompt, description, image_url, local_path, source_type, created_at, updated_at)
      VALUES (NULL, ?, ?, ?, ?, ?, ?, 'scene', ?, ?)`
-  ).run(scene.location || '', scene.time || null, scene.prompt || null, scene.prompt || null, scene.image_url || null, scene.local_path || null, now, now);
+  ).run(scene.location || '', scene.time || null, scene.prompt || null, scene.prompt || null, imageUrl, scene.local_path || null, now, now);
   log.info('Scene added to material library (global)', { scene_id: sceneId, library_item_id: info.lastInsertRowid });
   return { ok: true, item: getLibraryItem(db, String(info.lastInsertRowid)) };
 }

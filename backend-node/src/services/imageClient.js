@@ -919,6 +919,8 @@ async function callGeminiImageApi(db, config, log, opts) {
 
   // 读取所有参考图（buffer + mimeType）
   const refImageParts = []; // { label, imagePart }
+  const TOTAL_REF_LIMIT_BYTES = 10 * 1024 * 1024; // inlineData 模式总大小上限 10MB
+  let totalRefSizeBytes = 0;
   for (let i = 0; i < rawRefs.slice(0, MAX_GEMINI_REF_IMAGES).length; i++) {
     const ref = rawRefs[i];
     log.info('[Gemini图生] 参考图 读取中', { image_gen_id, ref_index: i, ref: String(ref).slice(0, 80), elapsed: elapsed() });
@@ -963,11 +965,33 @@ async function callGeminiImageApi(db, config, log, opts) {
       continue;
     }
 
-    // 单张超过 2MB 时用 sharp 压缩到 2MB 以内（防止单图过大拖慢或超出模型限制）
+    // ① 单张超过 2MB 时用 sharp 压缩到 2MB 以内
     if (imageBuffer.length > 2 * 1024 * 1024) {
       const compressed = await compressImageBuffer(imageBuffer, mimeType, 2048, log);
       imageBuffer = compressed.buffer;
       mimeType = compressed.mimeType;
+    }
+
+    // ② 总大小预算控制（inlineData 模式）：所有参考图合计不超过 10MB
+    if (!useImageProxy) {
+      const remaining = TOTAL_REF_LIMIT_BYTES - totalRefSizeBytes;
+      if (imageBuffer.length > remaining) {
+        const targetKB = Math.max(200, Math.floor(remaining / 1024));
+        log.info('[Gemini图生] 参考图 总大小超预算，追加压缩', {
+          image_gen_id, ref_index: i,
+          current_kb: Math.round(imageBuffer.length / 1024),
+          budget_kb: Math.round(remaining / 1024),
+          target_kb: targetKB,
+        });
+        const compressed2 = await compressImageBuffer(imageBuffer, mimeType, targetKB, log);
+        imageBuffer = compressed2.buffer;
+        mimeType = compressed2.mimeType;
+        if (imageBuffer.length > remaining) {
+          log.warn('[Gemini图生] 参考图 追加压缩后仍超总预算，跳过', { image_gen_id, ref_index: i });
+          continue;
+        }
+      }
+      totalRefSizeBytes += imageBuffer.length;
     }
 
     let imagePart;

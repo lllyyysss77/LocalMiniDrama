@@ -160,10 +160,17 @@ function importDrama(db, cfg, log, zipBuffer) {
     }
   }
 
-  // ---- 导入场景（带 episode_id） ----
-  const sceneNewIds = []; // 按导出顺序保存新场景 id，用于恢复分镜 scene_index
+  // ---- 导入场景（带 episode_id，按 location+time 去重：同名场景只创建一条记录）----
+  const sceneNewIds = []; // 按导出顺序保存新场景 id（含去重后的映射），用于恢复分镜 scene_index
+  const sceneDedupeMap = new Map(); // key: "location|time" → 已创建的 scene id
   for (let i = 0; i < (data.scenes || []).length; i++) {
     const s = data.scenes[i];
+    const dedupeKey = `${(s.location || '').trim()}|${(s.time || '').trim()}`;
+    if (sceneDedupeMap.has(dedupeKey)) {
+      // 同 location+time 已存在，直接复用，不重复插入
+      sceneNewIds.push(sceneDedupeMap.get(dedupeKey));
+      continue;
+    }
     const epIdx = s.episode_index;
     const epId = (epIdx != null && epIdx >= 0 && episodeIdList[epIdx])
       ? episodeIdList[epIdx]
@@ -175,6 +182,7 @@ function importDrama(db, cfg, log, zipBuffer) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(dramaId, epId, s.location || null, s.time || null, s.prompt || '', localPath, extraImagesJson, now, now);
     sceneNewIds.push(info.lastInsertRowid);
+    sceneDedupeMap.set(dedupeKey, info.lastInsertRowid);
   }
 
   // ---- 导入道具（带 episode_id） ----

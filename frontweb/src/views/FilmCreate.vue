@@ -560,19 +560,16 @@
                       </div>
                     </div>
                     <div class="asset-cover-actions">
-                      <el-button type="primary" size="small" :loading="generatingSceneIds.has(scene.id)" @click="onGenerateSceneImage(scene)">
-                        <el-icon v-if="!generatingSceneIds.has(scene.id)"><MagicStick /></el-icon>
-                        AI 生成
-                      </el-button>
+                      <el-tooltip content="多角度图一张（正/侧/俯/仰）" placement="top">
+                        <el-button type="primary" size="small" :loading="generatingSceneIds.has(scene.id)" @click="onGenerateSceneImage(scene)">
+                          <el-icon v-if="!generatingSceneIds.has(scene.id)"><MagicStick /></el-icon>
+                          AI 生成
+                        </el-button>
+                      </el-tooltip>
                       <el-button type="success" size="small" :loading="uploadingResourceId === 'scene-' + scene.id" @click="onUploadResourceClick('scene', scene.id)">
                         <el-icon v-if="uploadingResourceId !== 'scene-' + scene.id"><Upload /></el-icon>
                         上传
                       </el-button>
-                      <el-tooltip v-if="hasAssetImage(scene)" content="多视角生成（正/侧/俯/仰）" placement="top">
-                        <el-button size="small" :loading="generatingSceneMultiViewIds.has(scene.id)" @click="onGenerateSceneMultiView(scene)">
-                          多视角
-                        </el-button>
-                      </el-tooltip>
                     </div>
                   </div>
                 </div>
@@ -656,7 +653,19 @@
               <el-checkbox v-model="videoFrameContiguity" size="small">
                 连贯帧模式（自动衔接相邻视频帧）
               </el-checkbox>
-              <el-tooltip content="启用后：批量视频将顺序生成，每条视频的末帧自动作为下一条的参考图，减少视频切换的跳跃感" placement="top">
+              <el-tooltip placement="top" :show-after="100">
+                <template #content>
+                  <div style="max-width:320px;line-height:1.7">
+                    <div style="font-weight:600;margin-bottom:4px">连贯帧模式说明</div>
+                    <div>启用后批量视频顺序生成，每条视频的<b>末帧</b>自动截取并作为下一条视频的<b>首帧参考图</b>，减少镜头切换的跳跃感。</div>
+                    <div style="margin-top:8px;font-weight:600">⚠️ 需要模型支持图生视频（i2v）</div>
+                    <div style="margin-top:4px">
+                      ✅ 支持：kling-video、kling-omni-video、wan2.2-kf2v-flash、wan2.6-i2v-flash<br/>
+                      ❌ 不支持（末帧将被忽略）：wan2.6-t2v、wan2.6-r2v-flash、wanx2.1-vace-plus 等纯文生视频模型
+                    </div>
+                    <div style="margin-top:8px;color:#faad14">如当前视频模型不支持 i2v，启用此选项不会报错，但末帧衔接不会生效。</div>
+                  </div>
+                </template>
                 <el-icon style="color:#9ca3af;cursor:help"><QuestionFilled /></el-icon>
               </el-tooltip>
             </div>
@@ -2262,6 +2271,122 @@ function getFirstImageFile(dataTransfer) {
   const file = Array.from(dataTransfer.files).find((f) => f.type.startsWith('image/'))
   return file || null
 }
+
+// ── 参考图文件读取工具 ──────────────────────────────────
+function readFileAsRefImage(file) {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = (ev) => resolve({ dataUrl: ev.target.result, filename: file.name })
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
+ * 处理角色/道具/场景参考图文件选择（<input type="file"> change 事件）
+ * type: 'character' | 'prop' | 'scene'
+ */
+async function onRefImageFileChange(type, event) {
+  const file = event.target?.files?.[0]
+  if (!file) return
+  const result = await readFileAsRefImage(file)
+  if (type === 'character') addCharRefImage.value = result
+  else if (type === 'prop') addPropRefImage.value = result
+  else if (type === 'scene') addSceneRefImage.value = result
+  event.target.value = ''
+}
+
+/**
+ * 处理角色/道具/场景参考图拖放（drop 事件）
+ * type: 'character' | 'prop' | 'scene'
+ */
+async function onRefImageDrop(type, event) {
+  const file = getFirstImageFile(event.dataTransfer)
+  if (!file) return
+  const result = await readFileAsRefImage(file)
+  if (type === 'character') addCharRefImage.value = result
+  else if (type === 'prop') addPropRefImage.value = result
+  else if (type === 'scene') addSceneRefImage.value = result
+}
+
+/**
+ * 处理"添加道具"简单弹窗的参考图文件选择
+ * type: 'addProp'
+ */
+async function onRefImageFileChange2(type, event) {
+  const file = event.target?.files?.[0]
+  if (!file) return
+  const result = await readFileAsRefImage(file)
+  if (type === 'addProp') addPropAddRefImage.value = result
+  event.target.value = ''
+}
+
+/**
+ * 处理"添加道具"简单弹窗的参考图拖放
+ * type: 'addProp'
+ */
+async function onRefImageDrop2(type, event) {
+  const file = getFirstImageFile(event.dataTransfer)
+  if (!file) return
+  const result = await readFileAsRefImage(file)
+  if (type === 'addProp') addPropAddRefImage.value = result
+}
+
+/**
+ * 从本地选择（尚未保存到服务器）的参考图中提取特征描述
+ * type: 'character' | 'prop' | 'scene'
+ */
+async function doExtractFromRef(type) {
+  if (type === 'character') {
+    const refImage = addCharRefImage.value
+    if (!refImage) return
+    extractingCharAppearance.value = true
+    try {
+      const name = editCharacterForm.value?.name || ''
+      const res = await uploadAPI.extractDescriptionFromImage('character', refImage.dataUrl, name)
+      if (res?.description && editCharacterForm.value) {
+        editCharacterForm.value.appearance = res.description
+        ElMessage.success('已从参考图提取外貌描述')
+      }
+    } catch (e) {
+      ElMessage.error(e.message || '提取失败，请检查 AI 配置中是否有支持视觉的模型')
+    } finally {
+      extractingCharAppearance.value = false
+    }
+  } else if (type === 'prop') {
+    const refImage = addPropRefImage.value
+    if (!refImage) return
+    extractingPropDesc.value = true
+    try {
+      const name = editPropForm.value?.name || ''
+      const res = await uploadAPI.extractDescriptionFromImage('prop', refImage.dataUrl, name)
+      if (res?.description && editPropForm.value) {
+        editPropForm.value.description = res.description
+        ElMessage.success('已从参考图提取特征描述')
+      }
+    } catch (e) {
+      ElMessage.error(e.message || '提取失败，请检查 AI 配置中是否有支持视觉的模型')
+    } finally {
+      extractingPropDesc.value = false
+    }
+  } else if (type === 'scene') {
+    const refImage = addSceneRefImage.value
+    if (!refImage) return
+    extractingSceneDesc.value = true
+    try {
+      const name = editSceneForm.value?.name || ''
+      const res = await uploadAPI.extractDescriptionFromImage('scene', refImage.dataUrl, name)
+      if (res?.description && editSceneForm.value) {
+        editSceneForm.value.description = res.description
+        ElMessage.success('已从参考图提取场景描述')
+      }
+    } catch (e) {
+      ElMessage.error(e.message || '提取失败，请检查 AI 配置中是否有支持视觉的模型')
+    } finally {
+      extractingSceneDesc.value = false
+    }
+  }
+}
+
 function onResourceDragOver(e, type, id) {
   e.preventDefault()
   e.stopPropagation()

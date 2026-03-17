@@ -20,12 +20,13 @@
         </div>
         <!-- 右侧操作区 -->
         <div class="header-actions">
-          <el-button class="btn-library" title="自由创作" @click="$router.push('/free-create')">
+          <!-- 暂时隐藏，功能待完善 -->
+          <!-- <el-button class="btn-library" title="自由创作" @click="$router.push('/free-create')">
             <el-icon><MagicStick /></el-icon>自由创作
           </el-button>
           <el-button class="btn-library" title="媒体素材库" @click="$router.push('/media-library')">
             <el-icon><Files /></el-icon>素材库
-          </el-button>
+          </el-button> -->
           <el-button v-if="!vendorLockEnabled" class="btn-wechat" title="扫码联系作者" @click="showWechat = true">
             <el-icon><ChatDotSquare /></el-icon>微信我
           </el-button>

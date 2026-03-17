@@ -8,31 +8,30 @@
 
 ---
 
-## [1.3.0] - 2026-03-17
+## [1.2.2] - 2026-03-17
 
-### 新增（竞品差距追赶）
+### 新增
 
-- **P0-1 视频帧连贯性**：批量生成分镜视频新增「连贯帧模式」开关；启用后强制顺序生成，每条视频完成后自动用浏览器 Canvas 提取末帧，上传后作为下一条视频的 `first_frame_url` 参考图，有效减少视频片段间的跳跃感
-- **P0-2 角色视觉锚点（identity_anchors）**：角色编辑弹窗新增「视觉锚点」区域，展示 AI 从外貌描述提炼的6层特征（骨相/五官/发型/肤色/颜色/特征标记）；新增「提炼视觉锚点」按钮，触发后台异步提炼并轮询写入；后端 `characterGenerationService.enrichIdentityAnchors` 函数对外导出，新增 `/characters/:id/extract-anchors` 路由
-- **P0-3 分镜图超分辨率**：分镜图操作栏新增「超分」按钮，调用 `/storyboards/:id/upscale` 后端接口，使用 sharp 以 Lanczos3 算法将图片放大 2×，替换为高清版本
-- **P1-2 小说/长文章节导入**：故事生成区域新增「导入小说」按钮；支持粘贴文本或上传 `.txt/.md` 文件；后端基于正则识别章节标题自动分割，可选 AI 改写为剧本格式；返回章节列表自动填入剧本编辑区，每章对应一集
-- **P1-3 多阶段角色造型**：角色编辑弹窗新增「多阶段造型」字段（JSON 格式），支持记录角色在不同集次的外貌变化（如第1-5集白衣、第6-10集黑衣）；数据库迁移 `17_character_stages.sql`，后端更新接口支持 `stages` 字段读写
-- **P2-1 自由创作模式**：新增独立页面 `/free-create`（FreeCreate.vue），不依赖剧集直接生成图片或视频；支持文字提示词、风格、比例/时长选择；视频模式可上传参考图；生成结果支持下载
-- **P2-2 媒体素材库**：新增独立页面 `/media-library`（MediaLibrary.vue），批量上传图片/视频素材，支持类型筛选、关键词搜索、多选批量删除、单项预览；主导航添加入口
-- **P2-3 场景多视角生成**：场景卡片操作栏新增「多视角」按钮，触发 `/scenes/:id/generate-four-view-image`，一次生成正/侧/俯/仰多视角图
-- **P2-4 TTS 语音合成**：分镜视频操作栏新增「配音」按钮，为对白自动调用 TTS 服务合成语音（支持 MiniMax T2A-v2）；音频保存到本地 `audio/` 目录；在分镜视频区域内嵌播放器展示；后端 `/audio/extract` 接口全面实现，新增 `storyboards.audio_local_path` 字段
+- **视频帧连贯性（连贯帧模式）**：批量生成分镜视频新增「连贯帧模式」开关；启用后强制顺序生成，每条视频完成后自动用浏览器 Canvas 提取末帧，上传后作为下一条视频的 `first_frame_url` 参考图，有效减少视频片段间的跳跃感；tooltip 详细说明支持的模型（kling-video、wan2.2-kf2v-flash 等）及不支持模型的静默降级行为
+- **小说/长文章节导入**：故事生成区域新增「导入小说」按钮；支持粘贴文本或上传 `.txt/.md` 文件；后端基于正则识别章节标题自动分割，可选 AI 改写为剧本格式；返回章节列表自动填入剧本编辑区，每章对应一集（`novelImportService.js`）
+- **场景 AI 生成 tooltip**：场景 AI 生成按钮悬停提示改为「多角度图一张（正/侧/俯/仰）」，原重复的「多视角」独立按钮已移除
+- **ffmpeg 自动解压**：安装包首次启动时自动将内置的 `ffmpeg.exe`/`ffprobe.exe` 从 `resources/ffmpeg/` 复制到 userData 工作目录，无需用户手动配置；已存在则跳过，支持用户手动替换版本；`electron-builder-lite.json` 通过 `extraResources` 将 `backend-node/tools/ffmpeg` 打包进安装包
 
-### 技术改进
+### 修复
 
-- `novelImportService.js`：新建小说导入服务，支持章节规则识别和可选 AI 剧本化
-- `ttsService.js`：新建 TTS 合成服务，封装 MiniMax 接口，可按需扩展
-- 数据库新增字段：`characters.stages`、`storyboards.audio_local_path`
-- 前端路由新增 `/free-create`、`/media-library` 两个独立功能页面
-- `sceneAPI.generateFourViewImage`、`storyboardsAPI.upscale`、`characterAPI.extractAnchors` 等新前端 API 方法
+- **doubao/火山引擎模型分镜 JSON 解析失败**：修复 doubao-1-5-pro 等模型将 JSON 数组包装成 `{"storyboards":[...]}` 对象格式、叠加 max_tokens 截断导致全部修复策略失效的问题；新增 `extractWrappedArrayStr()` 函数，检测到包装对象后提取内部数组候选串，再走截断修复 → jsonrepair 兜底流水线；同样适用于流式增量保存路径（`tryIncrementalSave`）
+- **分镜截断后续写内容重复**：续写 prompt 原只携带末尾 5 条分镜，AI 不知道前面已覆盖哪些情节，导致母亲关怀、雪儿致歉等段落反复出现；改为将全量已生成分镜标题列表（`镜号. [段落] 标题`）一并传入，明确禁止 AI 重复，续写连贯性大幅提升
+- **分镜生成默认 max_tokens 过小**：默认不传 max_tokens 导致 doubao 等模型使用 4096 token 默认上限，12000 字符即截断；改为默认传 `max_tokens: 16384`；若模型返回参数错误（HTTP 4xx 含 max_tokens/length/token 关键字），自动降级为不传 max_tokens 重试，所有尝试均记录日志
+- **JSON 字符串内原始换行符**：中文 AI 模型在对话/描述字段直接输出换行字节（非 `\n` 转义），导致 `JSON.parse` 报 "Unterminated string"；在 `safeParseAIJSON` 预处理阶段新增 `escapeNewlinesInStrings()` 字符级状态机扫描，将字符串值内的 `\n`/`\r`/`\t` 原始字节转义，修复后所有截断修复策略均可正常执行
+
+### 优化
+
+- **火山引擎默认文本模型**：一键配置和手动选择时，文本/对话默认模型由 doubao-1-5-pro-32k 改为 deepseek-v3-2-251201，生成质量更稳定
+- **首页隐藏「自由创作」和「素材库」按钮**：功能待完善，暂时注释隐藏，路由与页面代码保留
 
 ---
 
-## [1.2.1] - 2026-03-16
+## [1.2.1] - 2026-03-17
 
 ### 新增
 

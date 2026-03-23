@@ -70,7 +70,7 @@
 
 <img src="../项目截图/wx.jpg" alt="微信二维码" width="220" />
 <br/>
-<img src="项目截图/微信群.jpg" alt="微信交流群" width="220"/><br/>
+<img src="../项目截图/微信群.jpg" alt="微信交流群" width="220"/><br/>
 
 
 ---

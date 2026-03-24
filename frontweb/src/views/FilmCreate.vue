@@ -2719,7 +2719,7 @@ async function doUploadSbImage(sbId, file) {
   if (!file || !sbId || !dramaId.value) return
   uploadingSbImageId.value = sbId
   try {
-    const res = await uploadAPI.uploadImage(file)
+    const res = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
     const url = res?.url || res?.path
     const localPath = res?.local_path
     if (!url && !localPath) {
@@ -3315,7 +3315,7 @@ async function doUploadResourceImage(type, id, file) {
   const key = type === 'character' ? 'char-' : type === 'prop' ? 'prop-' : 'scene-'
   uploadingResourceId.value = key + id
   try {
-    const res = await uploadAPI.uploadImage(file)
+    const res = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
     const data = res?.data ?? res
     const uploadedLocalPath = data?.local_path || data?.path || null
     const url = data?.url || uploadedLocalPath
@@ -4023,7 +4023,7 @@ async function startBatchVideoGeneration() {
                 const lastFrameBlob = await captureVideoLastFrame(prevVideoUrl)
                 if (lastFrameBlob) {
                   const file = new File([lastFrameBlob], 'continuity_frame.jpg', { type: 'image/jpeg' })
-                  const uploadRes = await uploadAPI.uploadImage(file)
+                  const uploadRes = await uploadAPI.uploadImage(file, { dramaId: dramaId.value })
                   if (uploadRes?.local_path) {
                     contiguityFirstFrameUrl = toAbsoluteImageUrl('/static/' + uploadRes.local_path.replace(/^\//, ''))
                   }

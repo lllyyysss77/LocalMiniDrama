@@ -606,7 +606,7 @@ async function doUploadLibImg(event, form, api, reloadFn) {
   if (!file || !form?.id) return
   form.imgUploading = true
   try {
-    const res = await uploadAPI.uploadImage(file)
+    const res = await uploadAPI.uploadImage(file, { dramaId })
     const data = res?.data ?? res
     const url = data?.url || data?.path || data?.local_path
     if (!url) { ElMessage.error('上传未返回地址'); return }
@@ -686,7 +686,7 @@ async function uploadDramaCharImg(event) {
   if (!file || !form?.id) return
   form.imgUploading = true
   try {
-    const res = await uploadAPI.uploadImage(file)
+    const res = await uploadAPI.uploadImage(file, { dramaId })
     const data = res?.data ?? res
     const url = data?.url || data?.path || data?.local_path
     if (!url) { ElMessage.error('上传未返回地址'); return }
@@ -756,7 +756,7 @@ async function uploadDramaSceneImg(event) {
   if (!file || !form?.id) return
   form.imgUploading = true
   try {
-    const res = await uploadAPI.uploadImage(file)
+    const res = await uploadAPI.uploadImage(file, { dramaId })
     const data = res?.data ?? res
     const url = data?.url || data?.path || data?.local_path
     if (!url) { ElMessage.error('上传未返回地址'); return }
@@ -828,7 +828,7 @@ async function uploadDramaPropImg(event) {
   if (!file || !form?.id) return
   form.imgUploading = true
   try {
-    const res = await uploadAPI.uploadImage(file)
+    const res = await uploadAPI.uploadImage(file, { dramaId })
     const data = res?.data ?? res
     const url = data?.url || data?.path || data?.local_path
     if (!url) { ElMessage.error('上传未返回地址'); return }

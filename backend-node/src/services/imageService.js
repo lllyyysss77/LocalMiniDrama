@@ -58,6 +58,7 @@ const fs = require('fs');
 const imageClient = require('./imageClient');
 const taskService = require('./taskService');
 const uploadService = require('./uploadService');
+const storageLayout = require('./storageLayout');
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 
@@ -1120,8 +1121,17 @@ async function processImageGeneration(db, log, imageGenId) {
       const storagePath = path.isAbsolute(cfg.storage?.local_path)
         ? cfg.storage.local_path
         : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
-      const category = row.scene_id != null ? 'scenes' : 'images';
-      localPath = await uploadService.downloadImageToLocal(storagePath, result.image_url, category, log, 'ig');
+      const category =
+        row.scene_id != null ? 'scenes' : row.character_id != null ? 'characters' : 'images';
+      const projectSubdir = storageLayout.getProjectStorageSubdir(db, row.drama_id);
+      localPath = await uploadService.downloadImageToLocal(
+        storagePath,
+        result.image_url,
+        category,
+        log,
+        'ig',
+        projectSubdir
+      );
       log.info('[图生] Step5 保存完成', { id: imageGenId, local_path: localPath, save_ms: Date.now() - tSave, elapsed: elapsed() });
     } catch (saveErr) {
       log.warn('[图生] Step5 保存失败（不影响结果）', { id: imageGenId, err: saveErr.message, elapsed: elapsed() });

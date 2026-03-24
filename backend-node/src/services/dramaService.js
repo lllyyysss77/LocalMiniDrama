@@ -1,5 +1,7 @@
 // 对应 Go application/services/drama_service.go
 
+const storageLayout = require('./storageLayout');
+
 /**
  * 清理 image_url：如果数据库中存储的是 base64 data URL，则返回 null。
  * 图片应通过 local_path → /static/{local_path} 访问，base64 不应通过 API 透传（会严重膨胀响应体）。
@@ -12,7 +14,21 @@ function sanitizeImageUrl(url) {
 
 function createDrama(db, log, req) {
   const now = new Date().toISOString();
-  const metadataStr = req.metadata ? (typeof req.metadata === 'string' ? req.metadata : JSON.stringify(req.metadata)) : null;
+  let meta = {};
+  if (req.metadata) {
+    try {
+      meta =
+        typeof req.metadata === 'string'
+          ? JSON.parse(req.metadata)
+          : { ...req.metadata };
+    } catch (_) {
+      meta = {};
+    }
+  }
+  if (!meta.storage_folder_label) {
+    meta.storage_folder_label = storageLayout.sanitizeFolderLabel(req.title || '');
+  }
+  const metadataStr = Object.keys(meta).length ? JSON.stringify(meta) : null;
   const stmt = db.prepare(`
     INSERT INTO dramas (title, description, genre, style, metadata, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)

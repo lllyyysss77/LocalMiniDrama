@@ -4,6 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const aiConfigService = require('./aiConfigService');
 const uploadService = require('./uploadService');
+const storageLayout = require('./storageLayout');
 const taskService = require('./taskService');
 const { loadConfig } = require('../config');
 
@@ -1486,7 +1487,15 @@ function createAndGenerateImage(db, log, opts) {
           ? cfg.storage.local_path
           : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
         const category = sceneIdNum != null ? 'scenes' : (charIdNum != null ? 'characters' : 'images');
-        localPath = await uploadService.downloadImageToLocal(storagePath, result.image_url, category, log, 'ig');
+        const projectSubdir = storageLayout.getProjectStorageSubdir(db, dramaIdNum);
+        localPath = await uploadService.downloadImageToLocal(
+          storagePath,
+          result.image_url,
+          category,
+          log,
+          'ig',
+          projectSubdir
+        );
       } catch (_) {}
       // 兼容旧库无 completed_at：先试完整 UPDATE，失败则只更新必有列
       try {

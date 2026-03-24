@@ -4,6 +4,7 @@ const taskService = require('./taskService');
 const imageClient = require('./imageClient');
 const propService = require('./propService');
 const uploadService = require('./uploadService');
+const storageLayout = require('./storageLayout');
 const { aspectRatioToSize } = require('./imageService');
 
 function appendPrompt(base, extra) {
@@ -98,12 +99,14 @@ async function processPropImageGeneration(db, log, taskId, propId, opts) {
     const storagePath = path.isAbsolute(cfg.storage?.local_path)
       ? cfg.storage.local_path
       : path.join(process.cwd(), cfg.storage?.local_path || './data/storage');
+    const projectSubdir = storageLayout.getProjectStorageSubdir(db, prop.drama_id);
     localPath = await uploadService.downloadImageToLocal(
       storagePath,
       result.image_url,
-      'images',
+      'props',
       log,
-      'prop_' + propId
+      'prop_' + propId,
+      projectSubdir
     );
   } catch (_) {}
 

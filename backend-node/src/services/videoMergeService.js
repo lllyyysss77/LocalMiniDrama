@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const { getFfmpegPath, getFfprobePath, hasLocalFfmpeg } = require('../utils/ffmpegPath');
+const storageLayout = require('./storageLayout');
 
 function list(db, query) {
   let sql = 'FROM video_merges WHERE deleted_at IS NULL';
@@ -216,13 +217,19 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
 
   let mergedRelativePath = null;
   if (localPaths.length > 0 && ffmpegAvailable && localPaths.length <= 100) {
-    const mergedDir = path.join(storageRoot, 'videos', 'merged');
+    const projectSubdir = storageLayout.getProjectStorageSubdir(db, r.drama_id);
+    const sub = projectSubdir && String(projectSubdir).trim();
+    const mergedDir = sub
+      ? path.join(storageRoot, sub, 'videos', 'merged')
+      : path.join(storageRoot, 'videos', 'merged');
     if (!fs.existsSync(mergedDir)) fs.mkdirSync(mergedDir, { recursive: true });
     const outputFileName = `merged_${Date.now()}.mp4`;
     const outputPath = path.join(mergedDir, outputFileName);
     const ok = runFfmpegConcat(localPaths, outputPath, log);
     if (ok && fs.existsSync(outputPath)) {
-      mergedRelativePath = path.join('videos', 'merged', outputFileName).replace(/\\/g, '/');
+      mergedRelativePath = sub
+        ? path.join(sub, 'videos', 'merged', outputFileName).replace(/\\/g, '/')
+        : path.join('videos', 'merged', outputFileName).replace(/\\/g, '/');
       log.info('Video merge completed (ffmpeg)', { merge_id: mergeId, episode_id: episodeId, output: mergedRelativePath });
     }
   }

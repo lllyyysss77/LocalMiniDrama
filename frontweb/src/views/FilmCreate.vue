@@ -893,6 +893,18 @@
                   class="sb-narration-input"
                   @blur="() => onSaveSbNarrationField(sb)"
                 />
+                <div v-if="(sbNarration[sb.id] || sb.narration || '').toString().trim()" class="sb-narration-actions">
+                  <el-tooltip content="解说旁白配音（TTS）" placement="top">
+                    <el-button size="small" :loading="ttsSbNarrationIds.has(sb.id)" @click="onTtsSbNarration(sb)">
+                      解说配音
+                    </el-button>
+                  </el-tooltip>
+                  <el-tooltip v-if="sbNarrationAudioRelPath(sb)" content="播放解说旁白配音" placement="top">
+                    <el-button size="small" @click="playSbNarrationTts(sb)">
+                      <el-icon><VideoPlay /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                </div>
               </template>
             </div>
             <!-- 中：分镜图（优先用 /images?storyboard_id 拉取到的图，否则用 composed_image） -->
@@ -1036,20 +1048,6 @@
                 </el-tooltip>
                 <el-tooltip v-if="sb.dialogue && sbDialogueAudioRelPath(sb)" content="播放对白配音" placement="top">
                   <el-button size="small" @click="playSbDialogueTts(sb)">
-                    <el-icon><VideoPlay /></el-icon>
-                  </el-button>
-                </el-tooltip>
-                <el-tooltip v-if="(sbNarration[sb.id] || sb.narration || '').toString().trim()" content="解说旁白配音（TTS）" placement="top">
-                  <el-button size="small" :loading="ttsSbNarrationIds.has(sb.id)" @click="onTtsSbNarration(sb)">
-                    解说配音
-                  </el-button>
-                </el-tooltip>
-                <el-tooltip
-                  v-if="(sbNarration[sb.id] || sb.narration || '').toString().trim() && sbNarrationAudioRelPath(sb)"
-                  content="播放解说旁白配音"
-                  placement="top"
-                >
-                  <el-button size="small" @click="playSbNarrationTts(sb)">
                     <el-icon><VideoPlay /></el-icon>
                   </el-button>
                 </el-tooltip>
@@ -7188,6 +7186,13 @@ html.light .sb-export-srt-btn.el-button--primary.is-plain {
   --el-button-hover-text-color: #fff;
   --el-button-hover-bg-color: #6d28d9;
   --el-button-hover-border-color: #5b21b6;
+}
+.sb-narration-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 /* 分镜内解说旁白输入框：强制字/底对比，避免主题变量与页面继承冲突导致「看不见字」 */
 .sb-narration-input :deep(.el-textarea__inner) {

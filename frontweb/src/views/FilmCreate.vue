@@ -1031,7 +1031,12 @@
                 <el-button size="small" :loading="generatingSbVideoIds.has(sb.id)" :disabled="!sb.video_prompt" @click="onGenerateSbVideo(sb)">重新生成</el-button>
                 <el-tooltip v-if="sb.dialogue" content="对白配音（TTS）" placement="top">
                   <el-button size="small" :loading="ttsSbIds.has(sb.id)" @click="onTtsSbDialogue(sb)">
-                    配音
+                    对白配音
+                  </el-button>
+                </el-tooltip>
+                <el-tooltip v-if="sb.dialogue && sbDialogueAudioRelPath(sb)" content="播放对白配音" placement="top">
+                  <el-button size="small" @click="playSbDialogueTts(sb)">
+                    <el-icon><VideoPlay /></el-icon>
                   </el-button>
                 </el-tooltip>
                 <el-tooltip v-if="(sbNarration[sb.id] || sb.narration || '').toString().trim()" content="解说旁白配音（TTS）" placement="top">
@@ -1039,10 +1044,15 @@
                     解说配音
                   </el-button>
                 </el-tooltip>
-              </div>
-              <!-- TTS 音频播放 -->
-              <div v-if="sbAudioPaths[sb.id]" class="sb-audio-player">
-                <audio :src="'/static/' + sbAudioPaths[sb.id]" controls style="width:100%;height:32px" />
+                <el-tooltip
+                  v-if="(sbNarration[sb.id] || sb.narration || '').toString().trim() && sbNarrationAudioRelPath(sb)"
+                  content="播放解说旁白配音"
+                  placement="top"
+                >
+                  <el-button size="small" @click="playSbNarrationTts(sb)">
+                    <el-icon><VideoPlay /></el-icon>
+                  </el-button>
+                </el-tooltip>
               </div>
               <div class="sb-video-prompt-label">
                 <span class="sb-dot"></span>
@@ -1075,6 +1085,7 @@
               <el-option label="1080p" value="1080p" />
             </el-select>
           </el-form-item>
+          <!--
           <el-form-item label="配乐">
             <el-select v-model="videoMusic" placeholder="无" clearable style="width: 160px">
               <el-option label="无" value="" />
@@ -1091,11 +1102,32 @@
               <el-option label="中" value="medium" />
             </el-select>
           </el-form-item>
+          -->
           <el-form-item label="字幕">
-            <el-switch v-model="videoSubtitle" />
+            <div class="video-option-row">
+              <el-switch v-model="videoSubtitle" />
+              <span v-if="videoSubtitle" class="video-option-hint">开启后，合成整集时会检测解说旁白：若有文案则自动生成 SRT、按分镜时长合成旁白语音（过长加速 / 过短补静音）、与成片对齐后烧录字幕并混音。</span>
+            </div>
+          </el-form-item>
+          <el-form-item label="对白烧录">
+            <div class="video-option-row">
+              <el-switch v-model="videoBurnDialogue" />
+              <span v-if="videoBurnDialogue" class="video-option-hint">开启后，将把各镜「配音」生成的对白 TTS 按分镜时长对齐并混入整集成片（无对白音频的分镜为静音）。可与「字幕」旁白同时开启，两条音轨会叠混。</span>
+            </div>
           </el-form-item>
           <el-form-item label="水印">
-            <el-switch v-model="videoWatermark" />
+            <div class="video-option-row">
+              <el-switch v-model="videoWatermark" />
+              <el-input
+                v-if="videoWatermark"
+                v-model="videoWatermarkText"
+                placeholder="右下角水印文字"
+                maxlength="200"
+                show-word-limit
+                clearable
+                class="video-watermark-input"
+              />
+            </div>
           </el-form-item>
         </div>
         <p class="config-tip">文本/图片/视频使用的模型以「<el-link type="primary" :underline="false" @click="showAiConfigDialog = true">AI 配置</el-link>」中设为默认的为准。</p>
@@ -1875,7 +1907,7 @@ import { ref, computed, onMounted, onBeforeUnmount, reactive, nextTick } from 'v
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny, Moon, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold } from '@element-plus/icons-vue'
+import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny, Moon, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import { useFilmStore } from '@/stores/film'
 import { dramaAPI } from '@/api/drama'
@@ -1977,7 +2009,11 @@ const videoMusic = ref('')
 const videoSfx = ref('')
 const videoQuality = ref('high')
 const videoSubtitle = ref(true)
+/** 合成整集时把各镜对白 TTS（audio_local_path）按分镜时长对齐并混入成片 */
+const videoBurnDialogue = ref(false)
 const videoWatermark = ref(false)
+/** 水印开启时烧录到成片右下角 */
+const videoWatermarkText = ref('')
 
 const dramaId = computed(() => store.dramaId)
 const characters = computed(() => store.characters)
@@ -2278,7 +2314,12 @@ const generatingSceneMultiViewIds = reactive(new Set())
 // P2-4: TTS 状态
 const ttsSbIds = reactive(new Set())
 const ttsSbNarrationIds = reactive(new Set())
-const sbAudioPaths = ref({})
+/** 对白 TTS 路径缓存（与 storyboards.audio_local_path 一致） */
+const sbDialogueAudioPaths = ref({})
+/** 解说旁白 TTS 路径缓存（与 storyboards.narration_audio_local_path 一致） */
+const sbNarrationAudioPaths = ref({})
+/** 分镜 TTS 试听：避免多条同时播放 */
+let sbTtsPreviewAudio = null
 /** 正在编辑视频提示词的分镜 id；编辑中显示文本框与保存/取消 */
 const editingSbVideoPromptId = ref(null)
 const editingSbVideoPromptText = ref('')
@@ -3522,6 +3563,59 @@ async function onUpscaleSbImage(sb) {
   }
 }
 
+function normalizeAudioRelPath(raw) {
+  const s = String(raw != null ? raw : '').trim().replace(/^\//, '')
+  return s
+}
+
+/** 对白 TTS 相对路径 */
+function sbDialogueAudioRelPath(sb) {
+  if (!sb?.id) return ''
+  const fromCache = sbDialogueAudioPaths.value[sb.id]
+  const fromRow = sb.audio_local_path
+  const raw = (fromCache != null && String(fromCache).trim() !== '') ? fromCache : (fromRow != null ? fromRow : '')
+  return normalizeAudioRelPath(raw)
+}
+
+/** 解说旁白 TTS 相对路径 */
+function sbNarrationAudioRelPath(sb) {
+  if (!sb?.id) return ''
+  const fromCache = sbNarrationAudioPaths.value[sb.id]
+  const fromRow = sb.narration_audio_local_path
+  const raw = (fromCache != null && String(fromCache).trim() !== '') ? fromCache : (fromRow != null ? fromRow : '')
+  return normalizeAudioRelPath(raw)
+}
+
+function playSbTtsFromRel(rel) {
+  if (!rel) return
+  const url = `/static/${rel}`
+  try {
+    if (sbTtsPreviewAudio) {
+      sbTtsPreviewAudio.pause()
+      sbTtsPreviewAudio = null
+    }
+    const a = new Audio(url)
+    sbTtsPreviewAudio = a
+    a.addEventListener('ended', () => {
+      if (sbTtsPreviewAudio === a) sbTtsPreviewAudio = null
+    })
+    a.play().catch(() => {
+      ElMessage.warning('无法播放音频，请检查文件是否存在')
+      if (sbTtsPreviewAudio === a) sbTtsPreviewAudio = null
+    })
+  } catch (_) {
+    ElMessage.warning('无法播放音频')
+  }
+}
+
+function playSbDialogueTts(sb) {
+  playSbTtsFromRel(sbDialogueAudioRelPath(sb))
+}
+
+function playSbNarrationTts(sb) {
+  playSbTtsFromRel(sbNarrationAudioRelPath(sb))
+}
+
 /** P2-4: 为分镜对白生成 TTS 配音 */
 async function onTtsSbDialogue(sb) {
   if (!sb?.id || ttsSbIds.has(sb.id)) return
@@ -3534,12 +3628,16 @@ async function onTtsSbDialogue(sb) {
     const res = await fetch('/api/v1/audio/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storyboard_id: sb.id, text: sb.dialogue }),
+      body: JSON.stringify({ storyboard_id: sb.id, text: sb.dialogue, tts_kind: 'dialogue' }),
     })
     const data = await res.json()
-    if (!res.ok || data.code !== 200) throw new Error(data.message || '配音失败')
+    const businessOk = data.success === true || Number(data.code) === 200
+    if (!res.ok || !businessOk) {
+      throw new Error(data.error?.message || data.message || '配音失败')
+    }
     if (data.data?.local_path) {
-      sbAudioPaths.value = { ...sbAudioPaths.value, [sb.id]: data.data.local_path }
+      sbDialogueAudioPaths.value = { ...sbDialogueAudioPaths.value, [sb.id]: data.data.local_path }
+      sb.audio_local_path = data.data.local_path
       ElMessage.success('配音已生成')
     }
   } catch (e) {
@@ -3562,12 +3660,16 @@ async function onTtsSbNarration(sb) {
     const res = await fetch('/api/v1/audio/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ storyboard_id: sb.id, text }),
+      body: JSON.stringify({ storyboard_id: sb.id, text, tts_kind: 'narration' }),
     })
     const data = await res.json()
-    if (!res.ok || data.code !== 200) throw new Error(data.message || '解说配音失败')
+    const businessOk = data.success === true || Number(data.code) === 200
+    if (!res.ok || !businessOk) {
+      throw new Error(data.error?.message || data.message || '解说配音失败')
+    }
     if (data.data?.local_path) {
-      sbAudioPaths.value = { ...sbAudioPaths.value, [sb.id]: data.data.local_path }
+      sbNarrationAudioPaths.value = { ...sbNarrationAudioPaths.value, [sb.id]: data.data.local_path }
+      sb.narration_audio_local_path = data.data.local_path
       ElMessage.success('解说配音已生成')
     }
   } catch (e) {
@@ -4221,13 +4323,21 @@ async function startBatchVideoGeneration() {
   }
 }
 
+function getFinalizeMergeOptions() {
+  return {
+    burn_narration_subtitles: !!videoSubtitle.value,
+    burn_dialogue_audio: !!videoBurnDialogue.value,
+    watermark_text: videoWatermark.value ? String(videoWatermarkText.value || '').trim().slice(0, 200) : '',
+  }
+}
+
 async function onGenerateVideo() {
   if (!currentEpisodeId.value) return
   store.setVideoStatus('generating')
   store.setVideoProgress(5)
   videoErrorMsg.value = ''
   try {
-    const result = await dramaAPI.finalizeEpisode(currentEpisodeId.value)
+    const result = await dramaAPI.finalizeEpisode(currentEpisodeId.value, getFinalizeMergeOptions())
     if (result?.task_id != null) {
       store.setVideoProgress(10)
       ElMessage.success(result?.message || '视频合成任务已提交，请稍后查看')
@@ -4779,7 +4889,7 @@ async function runOneClickPipeline() {
     await checkPause()
     setPipelineStep(10, '合成整集视频...')
     try {
-      const result = await dramaAPI.finalizeEpisode(episodeId)
+      const result = await dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())
       if (result?.task_id != null) {
         const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama())
         if (pollResult?.paused) { await waitForResume(); return }
@@ -5070,7 +5180,7 @@ async function runRepairPipeline() {
     await checkPause()
     pipelineCurrentStep.value = '正在生成整集视频...'
     try {
-      const result = await dramaAPI.finalizeEpisode(episodeId)
+      const result = await dramaAPI.finalizeEpisode(episodeId, getFinalizeMergeOptions())
       if (result?.task_id != null) {
         const pollResult = await pollTaskWithPause(result.task_id, () => loadDrama())
         if (pollResult?.paused) { await waitForResume(); return }
@@ -6946,6 +7056,24 @@ html.light .sb-video-placeholder {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 12px 24px;
   margin-bottom: 16px;
+}
+.video-option-hint {
+  flex: 1;
+  min-width: 200px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--el-text-color-secondary);
+}
+.video-option-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px 12px;
+}
+.video-watermark-input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 360px;
 }
 .config-tip {
   margin: 12px 0 0;

@@ -137,7 +137,7 @@ function finalizeEpisode(db, log, cfg) {
     const episodeId = req.params.episode_id;
     if (!episodeId) return response.badRequest(res, 'episode_id不能为空');
     const baseUrl = cfg?.storage?.base_url || '';
-    const result = dramaService.finalizeEpisode(db, log, episodeId, baseUrl);
+    const result = dramaService.finalizeEpisode(db, log, episodeId, baseUrl, req.body || {});
     if (!result) return response.notFound(res, '剧集不存在');
     response.success(res, result);
   };

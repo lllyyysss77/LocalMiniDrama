@@ -352,6 +352,8 @@ function rowToStoryboard(r) {
       local_path: r.local_path ?? null,
       main_panel_idx: r.main_panel_idx != null ? Number(r.main_panel_idx) : null,
       video_url: r.video_url,
+      audio_local_path: r.audio_local_path ?? null,
+      narration_audio_local_path: r.narration_audio_local_path ?? null,
       status: r.status || 'pending',
       error_msg: r.error_msg,
       created_at: r.created_at,
@@ -657,7 +659,7 @@ function getVideoUrlForStoryboard(db, storyboardId, baseUrl) {
   return sbUrl;
 }
 
-function finalizeEpisode(db, log, episodeId, baseUrl) {
+function finalizeEpisode(db, log, episodeId, baseUrl, body = {}) {
   const ep = db.prepare('SELECT id, drama_id, episode_number FROM episodes WHERE id = ? AND deleted_at IS NULL').get(episodeId);
   if (!ep) return null;
   const drama = db.prepare('SELECT title FROM dramas WHERE id = ? AND deleted_at IS NULL').get(ep.drama_id);
@@ -691,6 +693,13 @@ function finalizeEpisode(db, log, episodeId, baseUrl) {
     title,
     scenes,
     provider: 'ffmpeg',
+    merge_options: {
+      burn_narration_subtitles: !!(body && body.burn_narration_subtitles),
+      burn_dialogue_audio: !!(body && body.burn_dialogue_audio),
+      watermark_text: (body && body.watermark_text != null)
+        ? String(body.watermark_text).trim().slice(0, 200)
+        : '',
+    },
   };
   const created = videoMergeService.create(db, log, mergeReq);
   const mergeId = created.merge_id || created.id;

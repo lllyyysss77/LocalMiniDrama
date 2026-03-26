@@ -44,9 +44,14 @@ function create(db, log, req) {
   const now = new Date().toISOString();
   const taskService = require('./taskService');
   const task = taskService.createTask(db, log, 'video_merge', String(req.episode_id || ''));
+  const mergeOptionsJson = (() => {
+    const o = req.merge_options;
+    if (o && typeof o === 'object') return JSON.stringify(o);
+    return '{}';
+  })();
   const info = db.prepare(
-    `INSERT INTO video_merges (episode_id, drama_id, title, provider, model, status, scenes, task_id, created_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`
+    `INSERT INTO video_merges (episode_id, drama_id, title, provider, model, status, scenes, merge_options, task_id, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`
   ).run(
     Number(req.episode_id) || 0,
     Number(req.drama_id) || 0,
@@ -54,6 +59,7 @@ function create(db, log, req) {
     req.provider || 'ffmpeg',
     req.model ?? null,
     req.scenes ? JSON.stringify(req.scenes) : '[]',
+    mergeOptionsJson,
     task.id,
     now
   );
@@ -231,6 +237,36 @@ async function processVideoMerge(db, log, mergeId, baseUrl) {
         ? path.join(sub, 'videos', 'merged', outputFileName).replace(/\\/g, '/')
         : path.join('videos', 'merged', outputFileName).replace(/\\/g, '/');
       log.info('Video merge completed (ffmpeg)', { merge_id: mergeId, episode_id: episodeId, output: mergedRelativePath });
+    }
+  }
+
+  let mergeOpts = {};
+  try {
+    mergeOpts = JSON.parse(r.merge_options || '{}');
+  } catch (_) {
+    mergeOpts = {};
+  }
+  const postNeed =
+    !!mergeOpts.burn_narration_subtitles
+    || !!mergeOpts.burn_dialogue_audio
+    || !!(mergeOpts.watermark_text && String(mergeOpts.watermark_text).trim());
+  if (mergedRelativePath && ffmpegAvailable && postNeed) {
+    const mergedAbsPath = path.join(storageRoot, mergedRelativePath.replace(/\//g, path.sep));
+    if (fs.existsSync(mergedAbsPath)) {
+      const mergedPP = require('./mergedEpisodePostProcess');
+      const post = await mergedPP.runMergedEpisodePostProcess(db, log, {
+        mergedAbsPath,
+        storageRoot,
+        scenes,
+        episodeId,
+        mergeOpts,
+      });
+      if (post.ok && post.relativePath) {
+        mergedRelativePath = post.relativePath;
+        log.info('Video merge: merged episode post-process', { merge_id: mergeId, out: mergedRelativePath });
+      } else if (post.error && post.error !== 'NO_POST_OPTS') {
+        log.warn('Video merge: post-process skipped', { merge_id: mergeId, err: post.error });
+      }
     }
   }
 

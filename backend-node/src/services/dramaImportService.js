@@ -237,6 +237,8 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
 
     for (const sb of (ep.storyboards || [])) {
       const sbImagePath = saveMediaFile(storagePath, projectDir, 'images', files, sb.image_file, 'sb_imp');
+      const sbAudioPath = saveMediaFile(storagePath, projectDir, 'audio', files, sb.audio_file, 'sb_audio_imp');
+      const sbNarrationAudioPath = saveMediaFile(storagePath, projectDir, 'audio', files, sb.narration_audio_file, 'sb_narr_audio_imp');
 
       // 还原 characters：从导出时记录的下标映射回新 ID
       const charIndices = Array.isArray(sb.character_indices) ? sb.character_indices : [];
@@ -257,8 +259,8 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
         .filter(id => id != null);
 
       const sbInfo = db.prepare(
-        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, dialogue, action, atmosphere, result, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, image_prompt, polished_prompt, video_prompt, duration, emotion, emotion_intensity, segment_index, segment_title, continuity_snapshot, characters, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO storyboards (episode_id, scene_id, storyboard_number, title, description, location, time, dialogue, narration, action, atmosphere, result, shot_type, angle, angle_h, angle_v, angle_s, movement, lighting_style, depth_of_field, image_prompt, polished_prompt, video_prompt, duration, emotion, emotion_intensity, segment_index, segment_title, continuity_snapshot, characters, audio_local_path, narration_audio_local_path, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         episodeId,
         sbSceneId,
@@ -268,6 +270,7 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
         sb.location || null,
         sb.time || null,
         sb.dialogue || null,
+        sb.narration || null,
         sb.action || null,
         sb.atmosphere || null,
         sb.result || null,
@@ -289,6 +292,8 @@ function _doImport(db, storagePath, files, data, d, title, metaStr, now, log) {
         sb.segment_title || null,
         sb.continuity_snapshot || null,
         charactersJson,
+        sbAudioPath || null,
+        sbNarrationAudioPath || null,
         now,
         now
       );

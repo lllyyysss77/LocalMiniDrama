@@ -132,6 +132,8 @@ function getStoryboardsForEpisode(db, episodeId) {
       })(),
       composed_image: r.composed_image,
       video_url: r.video_url,
+      audio_local_path: r.audio_local_path ?? null,
+      narration_audio_local_path: r.narration_audio_local_path ?? null,
       status: r.status || 'pending',
       created_at: r.created_at,
       updated_at: r.updated_at,

@@ -19,6 +19,10 @@ export const storyboardsAPI = {
   polishPrompt(id) {
     return request.post(`/storyboards/${id}/polish-prompt`, {})
   },
+  /** 全能模式：根据分镜内容 AI 生成片段描述；可选 body.duration 为当前分镜秒数（与界面预设一致） */
+  generateUniversalSegmentPrompt(id, body = {}) {
+    return request.post(`/storyboards/${id}/universal-segment-prompt`, body)
+  },
   insertBefore(id) {
     return request.post(`/storyboards/${id}/insert-before`, {})
   },

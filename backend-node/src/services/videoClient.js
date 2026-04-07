@@ -164,6 +164,44 @@ const KLING_OMNI_OFFICIAL_QUERY = '/v1/videos/omni-video/{taskId}';
 /** Omni-Video 文档支持的 aspect_ratio；有参考图时也必须传，否则接口易默认 16:9 */
 const KLING_OMNI_ASPECT_RATIOS = new Set(['9:16', '16:9', '1:1', '4:3', '3:4', '3:2', '2:3']);
 
+/**
+ * 归一化前端/元数据里的画幅字符串，便于命中可灵枚举（全角冒号、别名等）
+ * @returns {string|null} 可灵支持的比值，无法识别时返回 null
+ */
+function normalizeAspectRatioForApi(raw) {
+  if (raw == null) return null;
+  let s = String(raw)
+    .trim()
+    .replace(/\uFF1A/g, ':')
+    .replace(/[×xX＊*]/g, ':')
+    .replace(/\s+/g, '');
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  const aliases = {
+    portrait: '9:16',
+    landscape: '16:9',
+    square: '1:1',
+    vertical: '9:16',
+    horizontal: '16:9',
+  };
+  if (aliases[lower]) s = aliases[lower];
+  return KLING_OMNI_ASPECT_RATIOS.has(s) ? s : null;
+}
+
+function resolveKlingOmniAspectRatio(aspect_ratio, log, video_gen_id) {
+  const normalized = normalizeAspectRatioForApi(aspect_ratio);
+  if (normalized) return normalized;
+  const raw = aspect_ratio != null ? String(aspect_ratio).trim() : '';
+  if (raw) {
+    log.warn('[KlingOmni] aspect_ratio 不在可灵支持列表，回退 16:9', {
+      raw: aspect_ratio,
+      video_gen_id,
+      supported: [...KLING_OMNI_ASPECT_RATIOS].join(', '),
+    });
+  }
+  return '16:9';
+}
+
 /** 可灵官方 OpenAPI 域名（与 ffir 等 /kling/v1/... 中转路径不同） */
 function isKlingOfficialOmniHost(baseUrl) {
   const raw = (baseUrl || '').toString().trim();
@@ -315,8 +353,7 @@ async function callKlingOmniVideoApi(config, log, opts) {
 
   const modelName = model || 'kling-video-o1';
   const durStr = omniDurationString(modelName, duration);
-  const ratioRaw = String(aspect_ratio || '16:9').trim();
-  const ratio = KLING_OMNI_ASPECT_RATIOS.has(ratioRaw) ? ratioRaw : '16:9';
+  const ratio = resolveKlingOmniAspectRatio(aspect_ratio, log, video_gen_id);
 
   const refList = Array.isArray(reference_urls) ? reference_urls.filter(Boolean) : [];
   const primary = (image_url || '').trim();
@@ -666,7 +703,7 @@ async function callKlingVideoApi(config, log, opts) {
   const hasImage = !!imageInput;
   const dur = duration ? Number(duration) : 5;
   const klingDuration = dur <= 5 ? '5' : '10';
-  const ratio = aspect_ratio || '16:9';
+  const ratio = normalizeAspectRatioForApi(aspect_ratio) || '16:9';
 
   // 根据模型类型 & 是否有图片确定端点
   let createEp, taskType;
@@ -694,6 +731,7 @@ async function callKlingVideoApi(config, log, opts) {
       prompt: prompt || '',
       image: { type: 'url', url: imageInput },
       duration: klingDuration,
+      aspect_ratio: ratio,
       cfg_scale: 0.5,
       callback_url: '',
     };
@@ -1904,4 +1942,5 @@ module.exports = {
   getDefaultVideoConfig,
   callVideoApi,
   pollVideoTask,
+  normalizeAspectRatioForApi,
 };

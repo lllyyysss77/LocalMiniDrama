@@ -264,7 +264,15 @@
             :disabled="!currentEpisodeId || pipelineRunning"
             @click="startOneClickPipeline"
           >
-            开始生成
+            一键成片带图片视频
+          </el-button>
+          <el-button
+            :loading="pipelineRunning && !pipelinePaused"
+            :disabled="!currentEpisodeId || pipelineRunning"
+            title="仅提取角色、场景、道具与生成分镜文本，不生成图片与视频"
+            @click="startTextFrameworkPipeline"
+          >
+            生成文本框架
           </el-button>
           <template v-if="pipelineRunning">
             <el-button v-if="!pipelinePaused" type="warning" @click="pipelinePaused = true">⏸ 暂停</el-button>
@@ -273,7 +281,7 @@
         </div>
         <div v-if="pipelineRunning || pipelineErrorLog.length > 0" class="pipeline-status">
           <div v-if="pipelineCurrentStep" class="pipeline-current-step">
-            <span v-if="pipelineStepIndex > 0" class="pipeline-step-badge">{{ pipelineStepIndex }}/{{ PIPELINE_TOTAL_STEPS }}</span>
+            <span v-if="pipelineStepIndex > 0" class="pipeline-step-badge">{{ pipelineStepIndex }}/{{ pipelineStepTotal }}</span>
             {{ pipelineCurrentStep.replace(/^\[步骤 \d+\/\d+\] /, '') }}
           </div>
           <!-- 阶段间倒计时 -->
@@ -919,17 +927,38 @@
             <!-- 中：经典模式=分镜参考图；全能模式=片段描述（独立字段，与参考图并存） -->
             <div class="sb-panel sb-image" :class="{ 'sb-image--universal': isSbUniversalMode(sb.id) }">
               <template v-if="isSbUniversalMode(sb.id)">
-                <div class="sb-prompt-label">
-                  <span class="sb-dot"></span>
-                  <span>片段描述</span>
+                <div class="sb-prompt-label sb-universal-label-row">
+                  <div class="sb-universal-label-left">
+                    <span class="sb-dot"></span>
+                    <span>片段描述</span>
+                    <el-tooltip placement="top" :show-after="280" :show-arrow="false" popper-class="sb-universal-tooltip-popper">
+                      <template #content>
+                        <div class="sb-universal-tooltip">
+                          可灵 Omni-Video 全能链路（模型以 <strong>AI 配置 · 视频</strong> 为准，如 <code>kling-video-o1</code>、<code>kling-v3-omni</code>）：此处为提交主提示词；只要本框有内容，生视频时<strong>只</strong>发送这段，不会拼接下方「视频提示词」里的动作/对话/旁白。参考图顺序一般为：场景 → 角色（多张）→ 物品 → 分镜主图；请用 <strong>@图片1</strong>、<strong>@图片2</strong>…（<strong>@图片N 后建议加半角空格</strong>）对应参考图，勿用 @姓名 指图；有场景图时 <strong>@图片1</strong> 只表环境，人物从 <strong>@图片2</strong> 起。若场景参考是<strong>四宫格/多视角拼图</strong>，仅借空间与氛围，须在文案中写明<strong>单镜头完整画幅、禁止分屏宫格</strong>，避免成片模仿拼图布局。「根据分镜生成提示词」时第3行会写明环境仅参考 @图片1 且禁止复刻宫格拼图结构，并自动带上该约束。若本框留空，则退回仅用「视频提示词」。
+                        </div>
+                      </template>
+                      <el-icon class="sb-universal-hint-icon" tabindex="0" role="img" aria-label="片段说明">
+                        <QuestionFilled />
+                      </el-icon>
+                    </el-tooltip>
+                  </div>
+                  <el-button
+                    type="primary"
+                    link
+                    size="small"
+                    class="sb-universal-gen-btn"
+                    :loading="generatingUniversalSegmentIds.has(sb.id)"
+                    @click="onGenerateUniversalSegmentPrompt(sb)"
+                  >
+                    根据分镜生成提示词
+                  </el-button>
                 </div>
-                <p class="sb-universal-hint">可灵 <strong>kling-video-o1</strong> 全能链路：此处为提交主提示词；只要本框有内容，生视频时<strong>只</strong>发送这段，不会拼接下方「视频提示词」里的动作/对话/旁白。可配合 @ 指代参考图顺序；生成时会带上场景/角色/物品/分镜图等多张参考图。若本框留空，则退回仅用「视频提示词」。</p>
                 <el-input
                   v-model="sbUniversalSegmentText[sb.id]"
                   type="textarea"
                   :rows="10"
                   :autosize="{ minRows: 10, maxRows: 22 }"
-                  placeholder="例如：@图片一 穿上了外套，走向 @图片二 …"
+                  placeholder="例如：@图片1 为夜景街道，@图片2 从餐厅冲出停在光斑里，低头操作手机…"
                   class="sb-universal-textarea"
                   @blur="() => onSaveUniversalSegmentField(sb)"
                 />
@@ -1732,7 +1761,7 @@
             <el-radio-button value="classic">经典分镜</el-radio-button>
             <el-radio-button value="universal">全能模式</el-radio-button>
           </el-radio-group>
-          <div class="vp-mode-hint">全能模式对应可灵 <strong>O1</strong> 提交：中间为片段描述；点「生成分镜视频」时将使用模型 <code>kling-video-o1</code> 并合并多素材参考图。经典字段保留，可随时切回。</div>
+          <div class="vp-mode-hint">全能模式走可灵 Omni-Video：中间为片段描述；生视频时使用 <strong>AI 配置里当前启用的视频模型</strong>（如 <code>kling-video-o1</code>、<code>kling-v3-omni</code>）并合并多素材参考图。经典字段保留，可随时切回。</div>
         </el-form-item>
         <el-row :gutter="12">
           <el-col :span="12">
@@ -2085,7 +2114,8 @@ const pipelinePaused = ref(false)
 const pipelineErrorLog = ref([])
 const pipelineCurrentStep = ref('')
 const pipelineStepIndex = ref(0)    // 当前步骤序号（1-based）
-const PIPELINE_TOTAL_STEPS = 10     // 固定 10 大步骤
+/** 全流程 10 步；仅文本框架为前 4 步 */
+const pipelineStepTotal = ref(10)
 let pipelineResolveResume = null
 // 倒计时（两个生成阶段之间的确认窗口）
 const pipelineCountdown = ref(0)      // 剩余秒数，0 表示不在倒计时
@@ -2334,6 +2364,7 @@ const sbVideos = ref({})
 const sbVideoErrors = ref({})
 const generatingSbImageIds = reactive(new Set())
 const generatingSbVideoIds = reactive(new Set())
+const generatingUniversalSegmentIds = reactive(new Set())
 // 重新生成角色/场景关联分镜图的 loading set，key: 'char-{id}' | 'scene-{id}'
 const regenSbImagesForAsset = reactive(new Set())
 const regenSbImagesProgress = ref({})
@@ -3877,6 +3908,39 @@ async function onSaveUniversalSegmentField(sb) {
   } catch (_) { /* 静默失败，避免打断输入 */ }
 }
 
+/** 全能模式：根据当前分镜结构化字段调用文本模型生成片段描述（含运镜、机位等） */
+async function onGenerateUniversalSegmentPrompt(sb) {
+  if (!sb?.id || generatingUniversalSegmentIds.has(sb.id)) return
+  generatingUniversalSegmentIds.add(sb.id)
+  try {
+    const dUi = Number(sbDuration.value[sb.id])
+    const dRow = Number(sb.duration)
+    const dProj = Number(videoClipDuration.value)
+    const durationSec =
+      Number.isFinite(dUi) && dUi > 0
+        ? dUi
+        : Number.isFinite(dRow) && dRow > 0
+          ? dRow
+          : Number.isFinite(dProj) && dProj > 0
+            ? dProj
+            : 5
+    const data = await storyboardsAPI.generateUniversalSegmentPrompt(sb.id, { duration: durationSec })
+    const text = (data?.universal_segment_text ?? '').toString().trim()
+    if (!text) throw new Error('未返回提示词')
+    sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: text }
+    const list = store.currentEpisode?.storyboards
+    if (Array.isArray(list)) {
+      const row = list.find((x) => Number(x.id) === Number(sb.id))
+      if (row) row.universal_segment_text = text
+    }
+    ElMessage.success('已根据分镜生成全能片段提示词')
+  } catch (e) {
+    if (!e?.response) ElMessage.error(e.message || '生成失败，请检查文本模型配置')
+  } finally {
+    generatingUniversalSegmentIds.delete(sb.id)
+  }
+}
+
 /** P2-3: 生成场景多视角图 */
 async function onGenerateSceneMultiView(scene) {
   if (!scene?.id || generatingSceneMultiViewIds.has(scene.id)) return
@@ -3910,9 +3974,6 @@ function toAbsoluteImageUrl(url) {
   const base = (baseUrl.value || '').replace(/\/$/, '') || (typeof window !== 'undefined' ? window.location.origin : '')
   return base ? base + (s.startsWith('/') ? s : '/' + s) : s
 }
-
-/** 分镜「全能模式」走可灵 Omni-Video 时固定使用 O1（与 kling-v3-omni 区分） */
-const KLING_OMNI_UNIVERSAL_MODEL = 'kling-video-o1'
 
 function sbUniversalSegmentTrimmed(sb) {
   if (!sb?.id) return ''
@@ -4193,7 +4254,7 @@ async function onGenerateSbVideo(sb) {
     try {
       await ElMessageBox.confirm(
         universal
-          ? '当前没有可用的参考图（场景/角色/分镜图等），将按纯文案提交 Omni（kling-video-o1），效果可能不稳定。确认继续？'
+          ? '当前没有可用的参考图（场景/角色/分镜图等），将按纯文案提交 Omni-Video（模型以 AI 配置为准），效果可能不稳定。确认继续？'
           : '当前没有分镜参考图，将根据文字提示词直接生成视频，效果可能不稳定。确认继续？',
         universal ? '全能模式无参考图' : '没有分镜参考图',
         { confirmButtonText: '继续生成', cancelButtonText: '取消', type: 'warning' }
@@ -4228,9 +4289,8 @@ async function onGenerateSbVideo(sb) {
       prompt: buildSbVideoPromptForApi(sb),
       image_url: absoluteUrl || undefined,
       reference_image_urls: referenceUrls,
-      model: universal ? KLING_OMNI_UNIVERSAL_MODEL : undefined,
       style: getSelectedStyle(),
-      aspect_ratio: projectAspectRatio.value,
+      aspect_ratio: projectAspectRatio.value || '16:9',
       resolution: videoResolution.value || undefined,
       duration: videoClipDuration.value || undefined,
     })
@@ -4279,7 +4339,7 @@ async function onGenerateStoryboard() {
       style: getSelectedStyle(),
       storyboard_count: storyboardCount.value || undefined,
       video_duration: videoDuration.value || undefined,
-      aspect_ratio: projectAspectRatio.value,
+      aspect_ratio: projectAspectRatio.value || '16:9',
       include_narration: !!storyboardIncludeNarration.value,
     })
     const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
@@ -4478,7 +4538,7 @@ async function startBatchVideoGeneration() {
           }
           const firstFrameUrl = await getMainImageUrlForVideo(sb)
           const absoluteUrl = universal ? (omniRefs[0] || toAbsoluteImageUrl(firstFrameUrl)) : toAbsoluteImageUrl(firstFrameUrl)
-          // 连贯帧：提取上一条视频末帧作为参考（全能 O1 不走连贯帧替换）
+          // 连贯帧：提取上一条视频末帧作为参考（全能模式不走连贯帧替换）
           let contiguityFirstFrameUrl = absoluteUrl
           if (contiguity && prevVideoItem && !universal) {
             const prevVideoUrl = prevVideoItem.local_path
@@ -4507,9 +4567,8 @@ async function startBatchVideoGeneration() {
             image_url: contiguityFirstFrameUrl || undefined,
             first_frame_url: contiguityFirstFrameUrl || undefined,
             reference_image_urls: refUrls,
-            model: universal ? KLING_OMNI_UNIVERSAL_MODEL : undefined,
             style: getSelectedStyle(),
-            aspect_ratio: projectAspectRatio.value,
+            aspect_ratio: projectAspectRatio.value || '16:9',
             resolution: videoResolution.value || undefined,
             duration: videoClipDuration.value || undefined,
           })
@@ -4753,10 +4812,28 @@ async function startOneClickPipeline() {
   pipelineCurrentStep.value = ''
   pipelineStepIndex.value = 0
   pipelineActiveTasks.clear()
+  pipelineStepTotal.value = 10
   pipelineRunning.value = true
   pipelinePaused.value = false
   try {
-    await runOneClickPipeline()
+    await runOneClickPipeline(false)
+  } finally {
+    pipelineRunning.value = false
+    pipelineActiveTasks.clear()
+  }
+}
+
+async function startTextFrameworkPipeline() {
+  if (!currentEpisodeId.value || pipelineRunning.value) return
+  pipelineErrorLog.value = []
+  pipelineCurrentStep.value = ''
+  pipelineStepIndex.value = 0
+  pipelineActiveTasks.clear()
+  pipelineStepTotal.value = 4
+  pipelineRunning.value = true
+  pipelinePaused.value = false
+  try {
+    await runOneClickPipeline(true)
   } finally {
     pipelineRunning.value = false
     pipelineActiveTasks.clear()
@@ -4765,10 +4842,10 @@ async function startOneClickPipeline() {
 
 function setPipelineStep(idx, text) {
   pipelineStepIndex.value = idx
-  pipelineCurrentStep.value = `[步骤 ${idx}/${PIPELINE_TOTAL_STEPS}] ${text}`
+  pipelineCurrentStep.value = `[步骤 ${idx}/${pipelineStepTotal.value}] ${text}`
 }
 
-async function runOneClickPipeline() {
+async function runOneClickPipeline(textOnly = false) {
   const episodeId = currentEpisodeId.value
   const dramaIdVal = dramaId.value
   if (!episodeId || !dramaIdVal) return
@@ -4866,7 +4943,7 @@ async function runOneClickPipeline() {
       try {
         const res = await dramaAPI.generateStoryboard(episodeId, {
           style,
-          aspect_ratio: projectAspectRatio.value,
+          aspect_ratio: projectAspectRatio.value || '16:9',
           storyboard_count: storyboardCount.value || undefined,
           video_duration: videoDuration.value || undefined,
           include_narration: !!storyboardIncludeNarration.value,
@@ -4899,6 +4976,12 @@ async function runOneClickPipeline() {
       boards = store.storyboards || []
     } else {
       setPipelineStep(4, `已有 ${boards.length} 个分镜，跳过生成`)
+    }
+
+    if (textOnly) {
+      pipelineCurrentStep.value = '文本框架已就绪（未生成图片与视频）'
+      ElMessage.success('文本框架已生成：角色、场景、道具与分镜脚本已就绪')
+      return
     }
 
     // ════════════════════════════════════════════════════════
@@ -5103,9 +5186,8 @@ async function runOneClickPipeline() {
               prompt: buildSbVideoPromptForApi(sb),
               image_url: absoluteUrl || undefined,
               reference_image_urls: refUrls,
-              model: universal ? KLING_OMNI_UNIVERSAL_MODEL : undefined,
               style,
-              aspect_ratio: projectAspectRatio.value,
+              aspect_ratio: projectAspectRatio.value || '16:9',
               resolution: videoResolution.value || undefined,
               duration: videoClipDuration.value || undefined,
             })
@@ -5330,7 +5412,7 @@ async function runRepairPipeline() {
       pipelineCurrentStep.value = '正在生成分镜...'
       try {
         const res = await dramaAPI.generateStoryboard(episodeId, {
-          aspect_ratio: projectAspectRatio.value,
+          aspect_ratio: projectAspectRatio.value || '16:9',
           storyboard_count: storyboardCount.value || undefined,
           video_duration: videoDuration.value || undefined,
           include_narration: !!storyboardIncludeNarration.value,
@@ -5407,8 +5489,7 @@ async function runRepairPipeline() {
             prompt: buildSbVideoPromptForApi(sb),
             image_url: absoluteUrl || undefined,
             reference_image_urls: refUrls,
-            model: universal ? KLING_OMNI_UNIVERSAL_MODEL : undefined,
-            aspect_ratio: projectAspectRatio.value,
+            aspect_ratio: projectAspectRatio.value || '16:9',
             resolution: videoResolution.value || undefined,
             duration: videoClipDuration.value || undefined,
           })
@@ -7019,22 +7100,61 @@ html.light .sb-image-area:hover {
   min-height: 300px;
   justify-content: flex-start;
 }
-.sb-universal-hint {
+.sb-universal-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+.sb-universal-label-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.sb-universal-hint-icon {
+  cursor: help;
+  color: #9ca3af;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.sb-universal-hint-icon:hover {
+  color: #a78bfa;
+}
+.sb-universal-gen-btn {
+  flex-shrink: 0;
+}
+:global(.sb-universal-tooltip-popper.el-popper) {
+  padding: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+.sb-universal-tooltip {
+  max-width: 360px;
   font-size: 12px;
-  line-height: 1.5;
-  color: #71717a;
-  margin: 0 0 10px;
+  line-height: 1.55;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: #f1f5f9;
+  background: #0f172a;
+  border: 1px solid rgba(248, 250, 252, 0.22);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
-.sb-universal-hint code {
-  font-size: 11px;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: rgba(139, 92, 246, 0.12);
-  color: #c4b5fd;
+.sb-universal-tooltip strong {
+  font-weight: 600;
+  color: #ffffff;
 }
-html.light .sb-universal-hint code {
-  background: rgba(124, 58, 237, 0.1);
-  color: #6d28d9;
+html.light .sb-universal-tooltip {
+  color: #0f172a;
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+html.light .sb-universal-tooltip strong {
+  color: #020617;
 }
 .sb-universal-textarea {
   flex: 1;

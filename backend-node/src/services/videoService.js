@@ -121,6 +121,8 @@ function targetVideoPixelsForAspect(aspectRatio) {
     '1:1': { w: 1920, h: 1920 },
     '4:3': { w: 1920, h: 1440 },
     '3:4': { w: 1440, h: 1920 },
+    '3:2': { w: 2560, h: 1708 },
+    '2:3': { w: 1708, h: 2560 },
     '21:9': { w: 2560, h: 1080 },
   };
   if (map[r]) return map[r];
@@ -229,13 +231,19 @@ async function processVideoGeneration(db, log, videoGenId) {
       }
     }
     let aspectForVideo = row.aspect_ratio;
+    if (aspectForVideo) {
+      const n = videoClient.normalizeAspectRatioForApi(aspectForVideo);
+      if (n) aspectForVideo = n;
+    }
     if (!aspectForVideo && row.drama_id) {
       try {
         const dramaRow = db.prepare('SELECT metadata FROM dramas WHERE id = ? AND deleted_at IS NULL').get(row.drama_id);
         if (dramaRow && dramaRow.metadata) {
           const meta =
             typeof dramaRow.metadata === 'string' ? JSON.parse(dramaRow.metadata) : dramaRow.metadata;
-          if (meta && meta.aspect_ratio) aspectForVideo = meta.aspect_ratio;
+          if (meta && meta.aspect_ratio) {
+            aspectForVideo = videoClient.normalizeAspectRatioForApi(meta.aspect_ratio);
+          }
         }
       } catch (_) {}
     }

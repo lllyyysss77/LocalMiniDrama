@@ -301,6 +301,7 @@
           <el-select v-model="form.api_protocol" style="width: 100%" placeholder="选择接口规范（自定义厂商必选）" clearable>
             <el-option label="OpenAI 兼容（大多数中转站默认）" value="openai" />
             <el-option label="火山引擎（豆包 Seedream / Seedance）" value="volcengine" />
+            <el-option label="火山即梦 Seedance 全能（方舟多图参考，Seedance 2.0 等）" value="volcengine_omni" />
             <el-option label="通义万象 DashScope" value="dashscope" />
             <el-option label="Google Gemini（图片 / Veo 视频）" value="gemini" />
             <el-option label="Sora 中转站（multipart/form-data，seconds+size）" value="sora" />
@@ -395,12 +396,29 @@ input_reference = (图片文件，可选)</pre>
               <el-collapse-item name="volcengine-vid">
                 <template #title><span class="ph-tag ph-tag-vid">视频</span> 火山引擎 — 豆包 Seedance</template>
                 <div class="ph-body">
-                  <b>Endpoint：</b><code>POST /api/v3/videos/generations</code><br>
+                  <b>Endpoint：</b><code>POST …/contents/generations/tasks</code>（与后端一致）<br>
                   <b>Base URL：</b><code>https://ark.cn-beijing.volces.com/api/v3</code><br>
                   <pre>{ "model": "doubao-seedance-1-5-pro-251215",
   "content": [{ "type": "text", "text": "..." }],
   "ratio": "9:16", "duration": 5,
   "watermark": false, "resolution": "720p" }</pre>
+                </div>
+              </el-collapse-item>
+              <el-collapse-item name="volcengine-omni-vid">
+                <template #title><span class="ph-tag ph-tag-vid">视频</span> 火山即梦 Seedance 全能（多图参考）</template>
+                <div class="ph-body">
+                  <b>适用：</b>方舟 Seedance 2.0 等支持多参考图的全能链路；与「全能模式」分镜、<code>@图片1</code>… 提示词配合使用。<br>
+                  <b>Endpoint：</b><code>POST {base}/contents/generations/tasks</code>，轮询 <code>GET {base}/contents/generations/tasks/{taskId}</code><br>
+                  <b>厂商：</b>仍选「火山引擎」，<b>接口规范</b>选本项；模型填控制台接入点（如 <code>doubao-seedance-2-0-260128</code>，以控制台为准）。<br>
+                  <pre>{ "model": "doubao-seedance-2-0-260128",
+  "task_type": "i2v",
+  "content": [
+    { "type": "text", "text": "… @图片1 … @图片2 …" },
+    { "type": "image_url", "image_url": { "url": "https://..." } },
+    { "type": "image_url", "image_url": { "url": "https://..." }, "role": "reference_image" }
+  ],
+  "ratio": "9:16", "duration": 8, "watermark": false }</pre>
+                  <b>说明：</b>首张图为首帧（无 role），其余图为 <code>reference_image</code>；最多 9 张，时长 Seedance 2.x 按 4–15 秒吸附。
                 </div>
               </el-collapse-item>
               <el-collapse-item name="dashscope-vid">
@@ -1078,7 +1096,7 @@ const providerConfigs = {
     { id: 'ffir', name: '飞儿API / 可灵 Omni-Video (ffir.cn)', models: ['kling-video-o1', 'kling-v3-omni'] },
     { id: 'kling', name: '可灵 Kling', models: ['kling-omni-video', 'kling-video', 'kling-motion-control'] },
     { id: 'vidu', name: 'Vidu', models: ['viduq2', 'viduq2-pro', 'viduq2-turbo', 'viduq3-pro'] },
-    { id: 'volces', name: '火山引擎', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
+    { id: 'volces', name: '火山引擎', models: ['doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015'] },
     // { id: 'chatfire', name: 'Chatfire', models: ['doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-lite-i2v-250428', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-pro-fast-251015', 'sora-2', 'sora-2-pro'] },
     { id: 'minimax', name: 'MiniMax 海螺', models: ['MiniMax-Hailuo-2.3', 'MiniMax-Hailuo-2.3-Fast', 'MiniMax-Hailuo-02'] },
     { id: 'gemini', name: 'Google Gemini (Veo)', models: ['veo-3.1-generate-preview', 'veo-3.0-generate-preview', 'veo-3.0-fast-generate-preview'] },
@@ -1193,9 +1211,11 @@ const endpointPreviewInfo = computed(() => {
     } else {
       submitPath = '/images/generations'  // openai 兼容：base_url 已含 /v1
     }
-  } else if (service_type === 'video') {
+    } else if (service_type === 'video') {
     if (endpoint) {
       submitPath = endpoint
+    } else if (proto === 'volcengine_omni') {
+      submitPath = '/contents/generations/tasks'
     } else if (proto === 'volcengine' || p === 'volces' || p === 'volcengine') {
       submitPath = '/videos/generations'
     } else if (proto === 'dashscope' || p === 'dashscope') {
@@ -1228,6 +1248,8 @@ const endpointPreviewInfo = computed(() => {
 
     if (query_endpoint) {
       queryPath = query_endpoint
+    } else if (proto === 'volcengine_omni') {
+      queryPath = '/contents/generations/tasks/{taskId}'
     } else if (proto === 'volcengine' || p === 'volces' || p === 'volcengine') {
       queryPath = '/tasks/{taskId}/info'
     } else if (proto === 'dashscope' || p === 'dashscope') {

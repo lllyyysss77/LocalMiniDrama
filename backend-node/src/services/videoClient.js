@@ -314,6 +314,189 @@ async function resolveImageInputForOmniAsync(rawUrl, files_base_url, storage_loc
 }
 
 /**
+ * 火山方舟 Seedance 全能/多图参考：参考图解析（公网 URL / 图床 / 本地 base64），与可灵 Omni 逻辑一致
+ */
+async function resolveVolcOmniImageAsync(rawUrl, files_base_url, storage_local_path, log, video_gen_id, index) {
+  const raw = (rawUrl || '').trim();
+  if (!raw) return null;
+  if (raw.startsWith('data:')) return raw;
+
+  const isPublicHttp = /^https?:\/\//i.test(raw) && !/localhost|127\.0\.0\.1/i.test(raw);
+  if (isPublicHttp) return raw;
+
+  if (storage_local_path) {
+    const tag = `volc_omni_vg${video_gen_id}_${index}`;
+    const proxyUrl = await uploadLocalImageToProxy(storage_local_path, raw, log, tag);
+    if (proxyUrl) {
+      log.info('[VolcOmni] 已上传图床', { video_gen_id, index, url_head: proxyUrl.slice(0, 64) });
+      return proxyUrl;
+    }
+    log.warn('[VolcOmni] 图床上传未返回 URL，尝试 base64', { video_gen_id, index });
+  }
+
+  return resolveImageInputForOmniLocalBase64(raw, files_base_url, storage_local_path, log, video_gen_id);
+}
+
+/** Seedance 2.x：时长吸附到 4–15 秒；旧版 Seedance 仍用 5/10 */
+function normalizeVolcOmniDuration(modelName, durationNum) {
+  const m = String(modelName || '').toLowerCase();
+  const isV2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(m);
+  const d = Number(durationNum);
+  const safe = Number.isFinite(d) && d > 0 ? d : 5;
+  if (isV2) {
+    const allowed = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let best = 5;
+    let bestDiff = 999;
+    for (const a of allowed) {
+      const diff = Math.abs(a - safe);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = a;
+      }
+    }
+    return best;
+  }
+  return safe <= 7 ? 5 : 10;
+}
+
+/**
+ * 火山引擎方舟 — Seedance 2.0 等「全能/多参考图」视频
+ * 与标准 volcengine 共用：POST {base}/contents/generations/tasks，GET {base}/contents/generations/tasks/{id}
+ * content：首条 text；多图时首图 i2v（无 role），其余 role=reference_image（与方舟多图参考示例一致）
+ */
+async function callVolcengineOmniVideoApi(config, log, opts) {
+  const {
+    prompt,
+    model: preferredModel,
+    duration,
+    aspect_ratio,
+    resolution,
+    seed,
+    camera_fixed,
+    watermark,
+    image_url,
+    reference_urls,
+    files_base_url,
+    storage_local_path,
+    video_gen_id,
+  } = opts;
+
+  const url = buildVideoUrl(config);
+  const model = getModelFromConfig(config, preferredModel);
+  const finalModel = normalizeVolcModel(model);
+  const ratio = aspect_ratio || '16:9';
+  const effectiveDuration = normalizeVolcOmniDuration(finalModel, duration);
+
+  const refList = Array.isArray(reference_urls) ? reference_urls.filter(Boolean) : [];
+  const primary = (image_url || '').trim();
+  const orderedUrls = [...(primary ? [primary] : []), ...refList.filter((u) => u !== primary)];
+  const maxRef = 9;
+  const urls = orderedUrls.slice(0, maxRef);
+
+  const body = {
+    model: finalModel,
+    content: [{ type: 'text', text: (prompt || '').trim() }],
+    ratio,
+    duration: effectiveDuration,
+    watermark: watermark != null ? Boolean(watermark) : false,
+  };
+  if (resolution) body.resolution = resolution;
+  if (seed != null) body.seed = Number(seed);
+  if (camera_fixed != null) body.camera_fixed = Boolean(camera_fixed);
+
+  if (urls.length) {
+    for (let i = 0; i < urls.length; i++) {
+      let u = await resolveVolcOmniImageAsync(
+        urls[i],
+        files_base_url,
+        storage_local_path,
+        log,
+        video_gen_id,
+        i
+      );
+      if (!u) continue;
+      if (/localhost|127\.0\.0\.1/i.test(u) && storage_local_path && (files_base_url || '').match(/localhost|127\.0\.0\.1/i)) {
+        const baseUrl = (files_base_url || '').replace(/\/$/, '');
+        const afterStatic = u.split('/static/')[1] || (baseUrl ? u.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
+        const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
+        if (relPath) {
+          const filePath = path.join(storage_local_path, relPath);
+          try {
+            if (fs.existsSync(filePath)) {
+              const buf = fs.readFileSync(filePath);
+              const ext = path.extname(filePath).toLowerCase();
+              const mime =
+                { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[
+                  ext
+                ] || 'image/png';
+              u = 'data:' + mime + ';base64,' + buf.toString('base64');
+            }
+          } catch (_) {}
+        }
+      }
+      const part = { type: 'image_url', image_url: { url: u } };
+      const pushedCount = body.content.length - 1;
+      if (pushedCount >= 1) part.role = 'reference_image';
+      body.content.push(part);
+    }
+    if (body.content.length > 1) body.task_type = 'i2v';
+  }
+
+  log.info('[VolcOmni] 创建任务', {
+    url,
+    model: finalModel,
+    ratio,
+    duration: effectiveDuration,
+    image_count: urls.length,
+    video_gen_id,
+    prompt_head: ((prompt || '').trim()).slice(0, 120),
+  });
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + (config.api_key || ''),
+    },
+    body: JSON.stringify(body),
+  });
+  const raw = await res.text();
+  log.info('[VolcOmni] 创建响应', { video_gen_id, status: res.status, raw: raw.slice(0, 1000) });
+
+  if (!res.ok) {
+    let errMsg = '火山 Seedance 全能创建失败: ' + res.status;
+    try {
+      const errJson = JSON.parse(raw);
+      const msg = errJson.error?.message || errJson.message || errJson.error;
+      if (msg) errMsg += ' - ' + String(msg).slice(0, 300);
+    } catch (_) {
+      if (raw) errMsg += ' - ' + raw.slice(0, 200);
+    }
+    return { error: errMsg };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return { error: '火山 Seedance 全能响应非 JSON: ' + raw.slice(0, 200) };
+  }
+
+  const taskId = data.id || data.task_id || (data.data && data.data.id);
+  const status = data.status || (data.data && data.data.status);
+  const videoUrl = pickProxyVideoUrl(data);
+  if (videoUrl) {
+    log.info('[VolcOmni] 直接返回 video_url', { video_gen_id });
+    return { video_url: videoUrl };
+  }
+  if (taskId) {
+    log.info('[VolcOmni] 返回 task_id', { video_gen_id, task_id: taskId, status });
+    return { task_id: taskId, status: status || 'processing' };
+  }
+  return { error: '火山 Seedance 全能未返回 task_id 或 video_url: ' + JSON.stringify(data).slice(0, 300) };
+}
+
+/**
  * 可灵 Omni-Video
  * - 官方（api.klingai.com / api-beijing.klingai.com）：POST {base}/v1/videos/omni-video，轮询 GET {base}/v1/videos/omni-video/{taskId}
  * - ffir 等中转：POST {base}/kling/v1/videos/omni-video，查询 GET {base}/kling/v1/images/omni-image/{taskId}
@@ -550,6 +733,10 @@ const VOLC_MODEL_ALIASES = {
   'doubao-seedance-1-0-lite':      'doubao-seedance-1-0-lite-250428',
   'doubao-seedance-1.5-pro':       'doubao-seedance-1-5-pro-251215',
   'doubao-seedance-1-5-pro':       'doubao-seedance-1-5-pro-251215',
+  'doubao-seedance-2.0-pro':       'doubao-seedance-2-0-260128',
+  'doubao-seedance-2-0-pro':       'doubao-seedance-2-0-260128',
+  'doubao-seedance-2.0-fast':      'doubao-seedance-2-0-fast-260128',
+  'doubao-seedance-2-0-fast':      'doubao-seedance-2-0-fast-260128',
 };
 
 function normalizeVolcModel(name) {
@@ -1562,6 +1749,24 @@ async function callVideoApi(db, log, opts) {
       model,
       duration: opts.duration,
       aspect_ratio,
+      image_url: opts.image_url,
+      reference_urls: opts.reference_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      video_gen_id: opts.video_gen_id,
+    });
+  }
+
+  if (protocol === 'volcengine_omni') {
+    return callVolcengineOmniVideoApi(config, log, {
+      prompt,
+      model,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution: opts.resolution,
+      seed: opts.seed,
+      camera_fixed: opts.camera_fixed,
+      watermark: opts.watermark,
       image_url: opts.image_url,
       reference_urls: opts.reference_urls,
       files_base_url: opts.files_base_url,

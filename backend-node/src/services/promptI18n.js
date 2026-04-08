@@ -1048,10 +1048,10 @@ CONTEXT_NEXT: <next shot summary — ignore for image, relevant only for mood>`;
 }
 
 /**
- * 可灵 kling-video-o1 全能模式：模板 + 仅用 @图片1/@图片2…（与 API 参考图顺序一致，不用 @姓名）
+ * 全能模式（可灵 Omni-Video、火山即梦 Seedance 2.0 多图参考等）：模板 + 仅用 @图片1/@图片2…（与参考图顺序一致，不用 @姓名）
  */
 function getUniversalOmniSegmentPrompt() {
-  return `You write the main prompt for Kling Omni-Video (kling-video-o1) "片段描述" in Chinese.
+  return `You write the main prompt for multi-reference video (e.g. Kling Omni-Video kling-video-o1, or Volcengine Ark Seedance 2.0 omnivideo) "片段描述" in Chinese.
 
 The USER message includes IMAGE_SLOT_MAP, LINE3_REQUIRED, OUTPUT_CONTRACT, STYLE_HINT, DURATION_SECONDS, and storyboard fields.
 

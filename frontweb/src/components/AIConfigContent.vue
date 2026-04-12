@@ -313,6 +313,7 @@
             <el-option label="Veo3 兼容（JSON，images+enhance_prompt，自动翻译英文）" value="veo3" />
             <el-option label="Vidu 视频" value="vidu" />
             <el-option label="可灵 Omni-Video（官方 api-beijing / ffir 中转，O1 全能）" value="kling_omni" />
+            <el-option label="xAI Grok Imagine（官方 prompt + aspect_ratio，/v1/videos/generations）" value="xai" />
             <el-option label="NanoBanana" value="nano_banana" />
           </el-select>
         </el-form-item>
@@ -1132,7 +1133,8 @@ const providerConfigs = {
         'jimeng-video-3.5-pro',
       ],
     },
-    { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] }
+    { id: 'openai', name: 'OpenAI', models: ['sora-2', 'sora-2-pro'] },
+    { id: 'xai', name: 'xAI Grok Imagine', models: ['grok-imagine-video'] },
   ],
   tts: [
     { id: 'minimax', name: 'MiniMax T2A', models: ['speech-02-hd', 'speech-02-turbo'] },
@@ -1155,6 +1157,8 @@ const providerProtocolMap = {
   klingai: 'kling_omni',
   // video
   vidu: 'vidu',
+  xai: 'xai',
+  grok: 'xai',
   minimax: 'openai',
   openai: 'openai',
   chatfire: 'openai',
@@ -1181,6 +1185,7 @@ function getBaseUrlForProvider(provider) {
   if (p === 'klingai') return 'https://api-beijing.klingai.com'
   if (p === 'ffir') return 'https://ffir.cn'
   if (p === 'jimeng_ai_api') return 'http://127.0.0.1:8000'
+  if (p === 'xai' || p === 'grok') return 'https://api.x.ai'
   return 'https://api.chatfire.site/v1'
 }
 
@@ -1265,6 +1270,8 @@ const endpointPreviewInfo = computed(() => {
       submitPath = '/ent/v2/img2video'
     } else if (proto === 'sora') {
       submitPath = '/v1/videos'
+    } else if (proto === 'xai') {
+      submitPath = '/v1/videos/generations'
     } else if (proto === 'veo3') {
       submitPath = '/v1/video/create'
     } else if (proto === 'jimeng_ai_api' || p === 'jimeng_ai_api') {
@@ -1297,6 +1304,8 @@ const endpointPreviewInfo = computed(() => {
     } else if (proto === 'vidu' || p === 'vidu') {
       queryPath = '/ent/v2/tasks/{taskId}/creations'
     } else if (proto === 'sora') {
+      queryPath = '/v1/videos/{taskId}'
+    } else if (proto === 'xai') {
       queryPath = '/v1/videos/{taskId}'
     } else if (proto === 'veo3') {
       queryPath = '/v1/video/query?id={taskId}'

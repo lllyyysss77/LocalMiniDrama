@@ -23,7 +23,25 @@ function inferVideoProtocol(provider) {
   if (p === 'ffir') return 'kling_omni';
   if (p === 'kling' || p === 'klingai') return 'kling';
   if (p === 'jimeng_ai_api') return 'jimeng_ai_api';
+  if (p === 'xai' || p === 'grok') return 'xai';
   return 'openai';
+}
+
+/**
+ * 显式 api_protocol 优先；未配置时推断。
+ * Grok / xAI 官方为 prompt + aspect_ratio + GET /v1/videos/{request_id}，与中转站用的 ratio + content 不同。
+ */
+function resolveVideoProtocol(config, modelHint) {
+  const provider = (config.provider || '').toLowerCase();
+  const explicit = String(config.api_protocol || '').trim();
+  let protocol = explicit.toLowerCase() || inferVideoProtocol(provider);
+  const baseLower = String(config.base_url || '').toLowerCase();
+  const modelLower = String(modelHint || '').toLowerCase();
+  if (!explicit && protocol === 'openai') {
+    if (/api\.x\.ai(\/|$)/.test(baseLower)) protocol = 'xai';
+    else if (/grok-imagine|grok.*video/.test(modelLower)) protocol = 'xai';
+  }
+  return protocol;
 }
 
 /** 可灵 Omni / 多图生视频（飞儿 ffir.cn 等中转）：可用环境变量临时覆盖配置 */
@@ -710,7 +728,7 @@ function buildVideoUrl(config) {
 
 function buildQueryUrl(config, taskId) {
   const p = (config.provider || '').toLowerCase();
-  const proto = (config.api_protocol || '').toLowerCase();
+  const proto = resolveVideoProtocol(config);
   const isDashScope = proto === 'dashscope' || p === 'dashscope';
   const isVolc = p === 'volces' || p === 'volcengine' || p === 'volc';
   const isSora = proto === 'sora';
@@ -718,6 +736,7 @@ function buildQueryUrl(config, taskId) {
   const base = (config.base_url || '').replace(/\/$/, '');
   let defaultEp;
   if (isSora) defaultEp = '/v1/videos/{taskId}';
+  else if (proto === 'xai') defaultEp = '/v1/videos/{taskId}';
   else if (proto === 'veo3') defaultEp = '/v1/video/query?id={taskId}';
   else if (isDashScope) defaultEp = '/api/v1/tasks/{taskId}';
   else defaultEp = '/video/task/{taskId}';
@@ -765,6 +784,10 @@ function videoUrlFromRecord(rec) {
  */
 function pickProxyVideoUrl(data) {
   if (!data || typeof data !== 'object') return null;
+  if (data.video && typeof data.video === 'object') {
+    const vu = data.video.url || data.video.video_url;
+    if (vu && typeof vu === 'string') return vu;
+  }
   let u = videoUrlFromRecord(data);
   if (u) return u;
   const d = data.data;
@@ -1884,6 +1907,144 @@ async function callJimengAiApiVideo(config, log, opts) {
   return { error: 'Jimeng AI API 未返回 data[0].url: ' + JSON.stringify(data).slice(0, 400) };
 }
 
+function resolveXaiVideoResolution(resolution) {
+  const s = String(resolution || '').toLowerCase();
+  if (s.includes('480')) return '480p';
+  if (s.includes('720')) return '720p';
+  return '720p';
+}
+
+function clampXaiDuration(d) {
+  const n = Math.round(Number(d));
+  if (!Number.isFinite(n) || n < 1) return 8;
+  return Math.min(15, Math.max(1, n));
+}
+
+/**
+ * xAI Grok Imagine 官方视频 API：POST /v1/videos/generations，画幅字段为 aspect_ratio（非 ratio）。
+ */
+async function callXaiVideoApi(config, log, opts) {
+  const {
+    prompt,
+    model,
+    duration,
+    aspect_ratio,
+    resolution,
+    image_url,
+    reference_urls,
+    files_base_url,
+    storage_local_path,
+    video_gen_id,
+  } = opts;
+
+  const base = (config.base_url || 'https://api.x.ai').replace(/\/$/, '');
+  let ep = config.endpoint || '/v1/videos/generations';
+  if (!ep.startsWith('/')) ep = '/' + ep;
+  const url = base + ep;
+
+  const ratio = normalizeAspectRatioForApi(aspect_ratio) || '16:9';
+  const dur = clampXaiDuration(duration != null ? duration : 8);
+  const reso = resolveXaiVideoResolution(resolution);
+
+  let imageUrlForApi = (image_url || '').trim();
+  const hasImage = !!imageUrlForApi;
+  if (hasImage && imageUrlForApi && /localhost|127\.0\.0\.1/i.test(imageUrlForApi) && storage_local_path) {
+    const baseUrl = (files_base_url || '').replace(/\/$/, '');
+    const afterStatic =
+      imageUrlForApi.split('/static/')[1] ||
+      (baseUrl ? imageUrlForApi.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
+    const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
+    if (relPath) {
+      const filePath = path.join(storage_local_path, relPath);
+      try {
+        if (fs.existsSync(filePath)) {
+          const buf = fs.readFileSync(filePath);
+          const ext = path.extname(filePath).toLowerCase();
+          const mime =
+            { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] ||
+            'image/jpeg';
+          imageUrlForApi = 'data:' + mime + ';base64,' + buf.toString('base64');
+          log.info('[xAI视频] 本地首帧 → data URL', { video_gen_id, size_kb: Math.round(buf.length / 1024) });
+        }
+      } catch (e) {
+        log.warn('[xAI视频] 读取本地首帧失败', { video_gen_id, error: e.message });
+      }
+    }
+  }
+
+  const body = {
+    model: model || 'grok-imagine-video',
+    prompt: prompt || '',
+    duration: dur,
+    aspect_ratio: ratio,
+    resolution: reso,
+  };
+
+  if (hasImage && imageUrlForApi) {
+    body.image = { url: imageUrlForApi };
+  } else if (Array.isArray(reference_urls) && reference_urls.length > 0) {
+    const refs = reference_urls
+      .map((u) => (u && String(u).trim() ? { url: String(u).trim() } : null))
+      .filter(Boolean);
+    if (refs.length) body.reference_images = refs;
+  }
+
+  log.info('[xAI视频] 提交', {
+    video_gen_id,
+    url,
+    model: body.model,
+    aspect_ratio: ratio,
+    duration: dur,
+    resolution: reso,
+    has_image: !!body.image,
+    ref_count: body.reference_images?.length || 0,
+  });
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + (config.api_key || ''),
+    },
+    body: JSON.stringify(body),
+  });
+  const raw = await res.text();
+  log.info('[xAI视频] 响应', { video_gen_id, status: res.status, head: raw.slice(0, 500) });
+
+  if (!res.ok) {
+    let errMsg = 'xAI 视频请求失败: ' + res.status;
+    try {
+      const errJson = JSON.parse(raw);
+      const msg = errJson.error?.message || errJson.message || errJson.error;
+      if (msg) errMsg += ' - ' + String(msg).slice(0, 220);
+    } catch (_) {
+      if (raw) errMsg += ' - ' + raw.slice(0, 200);
+    }
+    return { error: errMsg };
+  }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    return { error: 'xAI 响应非 JSON: ' + raw.slice(0, 200) };
+  }
+
+  const direct = pickProxyVideoUrl(data);
+  if (direct) {
+    log.info('[xAI视频] 同步返回地址', { video_gen_id });
+    return { video_url: direct };
+  }
+
+  const reqId = data.request_id || data.task_id || data.id;
+  if (reqId) {
+    log.info('[xAI视频] 异步任务', { video_gen_id, request_id: reqId });
+    return { task_id: String(reqId), status: 'submitted' };
+  }
+
+  return { error: 'xAI 未返回 request_id 或视频地址: ' + JSON.stringify(data).slice(0, 300) };
+}
+
 /**
  * ?????? API?ChatFire/?? ? ?????
  * @returns {Promise<{ task_id?: string, video_url?: string, error?: string }>}
@@ -1896,8 +2057,7 @@ async function callVideoApi(db, log, opts) {
   }
   const model = getModelFromConfig(config, preferredModel);
   const provider = (config.provider || '').toLowerCase();
-  // api_protocol 优先，空时按 provider 名称推断
-  const protocol = (config.api_protocol || '').toLowerCase() || inferVideoProtocol(provider);
+  const protocol = resolveVideoProtocol(config, preferredModel);
   log.info('[视频] 路由协议', {
     video_gen_id,
     provider,
@@ -1917,6 +2077,21 @@ async function callVideoApi(db, log, opts) {
       image_url: opts.image_url,
       first_frame_url: opts.first_frame_url,
       last_frame_url: opts.last_frame_url,
+      reference_urls: opts.reference_urls,
+      files_base_url: opts.files_base_url,
+      storage_local_path: opts.storage_local_path,
+      video_gen_id: opts.video_gen_id,
+    });
+  }
+
+  if (protocol === 'xai') {
+    return callXaiVideoApi(config, log, {
+      prompt,
+      model,
+      duration: opts.duration,
+      aspect_ratio,
+      resolution: opts.resolution,
+      image_url: opts.image_url,
       reference_urls: opts.reference_urls,
       files_base_url: opts.files_base_url,
       storage_local_path: opts.storage_local_path,
@@ -2147,7 +2322,7 @@ async function callVideoApi(db, log, opts) {
  */
 async function pollVideoTask(db, log, videoGenId, taskId, config, maxAttempts = 300, intervalMs = 10000) {
   const provider = (config.provider || '').toLowerCase();
-  const protocol = (config.api_protocol || '').toLowerCase() || inferVideoProtocol(provider);
+  const protocol = resolveVideoProtocol(config);
   const isDashScope = protocol === 'dashscope';
   const isGemini = protocol === 'gemini';
   const isVidu = protocol === 'vidu';

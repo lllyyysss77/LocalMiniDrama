@@ -601,13 +601,13 @@
           <label class="sb-config-item">
             <span class="sb-config-label">分镜数量</span>
             <el-input-number v-model="storyboardCount" :min="1" :max="200" :step="5" placeholder="自动" class="sb-config-input" />
-            <span class="sb-config-hint">留空由 AI 决定</span>
+            <span class="sb-config-hint sb-config-hint--estimate" :title="scriptEstimateStoryboardTitle">留空由 AI 决定{{ scriptEstimateStoryboardHint }}</span>
           </label>
           <span class="sb-config-divider">｜</span>
           <label class="sb-config-item">
             <span class="sb-config-label">视频总时长(秒)</span>
             <el-input-number v-model="videoDuration" :min="10" :max="600" :step="5" placeholder="自动" class="sb-config-input" />
-            <span class="sb-config-hint">留空由 AI 决定</span>
+            <span class="sb-config-hint sb-config-hint--estimate" :title="scriptEstimateVideoDurationTitle">留空由 AI 决定{{ scriptEstimateVideoDurationHint }}</span>
           </label>
           <span class="sb-config-divider">｜</span>
           <label class="sb-config-item">
@@ -621,6 +621,9 @@
           </label>
         </div>
         <div class="sb-config-row sb-narration-export-row" style="margin-top:10px;flex-wrap:wrap;align-items:center;gap:12px">
+          <el-checkbox v-model="storyboardUniversalOmni" @change="() => saveProjectSettings(false)">
+            全能分镜模式（每镜输出 universal_segment_text，便于 Seedance / 可灵 Omni 生视频）
+          </el-checkbox>
           <el-checkbox v-model="storyboardIncludeNarration" @change="() => saveProjectSettings(false)">
             生成分镜时生成解说旁白（narration，与对白分开，便于后期 TTS）
           </el-checkbox>
@@ -836,7 +839,7 @@
                 </el-select>
               </div>
               <!-- 当前选中：场景 / 角色 / 物品缩略图 -->
-              <div v-if="getSbSelectedScene(sb.id) || getSbSelectedCharacters(sb.id).length || getSbSelectedProps(sb.id).length" class="sb-selected-thumbs">
+              <div v-if="getSbSelectedScene(sb.id) || getSbSelectedCharacters(sb.id).length || getSbSelectedProps(sb.id).length || (characters || []).length" class="sb-selected-thumbs">
                 <div v-if="getSbSelectedScene(sb.id)" class="sb-thumb-row">
                   <span class="sb-thumb-label">场景</span>
                   <div class="sb-thumb-list">
@@ -854,7 +857,7 @@
                     </div>
                   </div>
                 </div>
-                <div v-if="getSbSelectedCharacters(sb.id).length" class="sb-thumb-row">
+                <div v-if="(characters || []).length" class="sb-thumb-row">
                   <span class="sb-thumb-label">角色</span>
                   <div class="sb-thumb-list">
                     <div
@@ -869,6 +872,30 @@
                       <img v-if="hasAssetImage(c)" :src="assetImageUrl(c)" alt="" />
                       <span v-else class="sb-thumb-placeholder">{{ (c.name || '')[0] }}</span>
                     </div>
+                    <el-dropdown trigger="click" @command="(cmd) => onSbAddCharacterCommand(sb.id, cmd)">
+                      <div
+                        class="sb-thumb-item sb-thumb-avatar sb-thumb-add-char"
+                        title="添加角色"
+                        role="button"
+                        @click.stop
+                      >
+                        <el-icon><Plus /></el-icon>
+                      </div>
+                      <template #dropdown>
+                        <el-dropdown-menu class="sb-char-add-dropdown">
+                          <el-dropdown-item
+                            v-for="c in charactersAvailableToAddToSb(sb.id)"
+                            :key="c.id"
+                            :command="c.id"
+                          >
+                            {{ c.name || '未命名' }}
+                          </el-dropdown-item>
+                          <el-dropdown-item v-if="!charactersAvailableToAddToSb(sb.id).length" disabled>
+                            已全部添加或无角色
+                          </el-dropdown-item>
+                        </el-dropdown-menu>
+                      </template>
+                    </el-dropdown>
                   </div>
                 </div>
                 <div v-if="getSbSelectedProps(sb.id).length" class="sb-thumb-row">
@@ -1783,7 +1810,7 @@
         <el-row :gutter="12">
           <el-col :span="6">
             <el-form-item label="时长(秒)">
-              <el-input-number v-model="sbDuration[videoParamsTarget.id]" :min="1" :max="30" style="width:100%" />
+              <el-input-number v-model="sbDuration[videoParamsTarget.id]" :min="1" :max="60" style="width:100%" />
             </el-form-item>
           </el-col>
           <el-col :span="6">
@@ -2426,8 +2453,131 @@ const storyboardCount = ref(null) // 分镜数量
 const videoDuration = ref(null) // 视频总长度
 /** 分镜生成时是否要求 AI 输出 narration（解说旁白） */
 const storyboardIncludeNarration = ref(false)
+/** 分镜生成是否使用全能模式（universal_segment_text，对接 Seedance / 可灵 Omni） */
+const storyboardUniversalOmni = ref(true)
 const gridMode = ref('single') // 序列图模式：single / quad_grid / nine_grid
 
+// ── 剧本长度 → 估算总时长 / 分镜数（对齐参考前端 soullensV68 的镜数公式与节奏除数）──
+const SOUL_LENS_SHOT_DIVISOR = {
+  action: 5.4,
+  thriller: 5.8,
+  dialogue: 7.2,
+  lyrical: 7.8,
+  balanced: 6.5,
+}
+
+/** 由剧本关键词粗判节奏类型，决定 shotDivisor（与灵境 Si() 一致） */
+function soulLensRhythmKeyFromScript(text) {
+  const n = String(text || '').toLowerCase()
+  if (/(追逐|打斗|枪战|爆炸|战斗|搏斗|动作|逃亡|冲刺|对决|生死|危机|高速|追车)/.test(n)) return 'action'
+  if (/(悬疑|惊悚|恐怖|诡异|密室|跟踪|反转|谋杀|血迹|幽灵)/.test(n)) return 'thriller'
+  if (/(对白|谈话|对话|电话|会议|争吵|辩论|商量|盘问|闲聊)/.test(n)) return 'dialogue'
+  if (/(抒情|诗意|意境|独白|回忆|梦境|冥想|静默|凝望)/.test(n)) return 'lyrical'
+  return 'balanced'
+}
+
+function soulLensShotDivisorForScript(text) {
+  return SOUL_LENS_SHOT_DIVISOR[soulLensRhythmKeyFromScript(text)] ?? SOUL_LENS_SHOT_DIVISOR.balanced
+}
+
+/** 灵境 _i：总时长（秒）→ 镜数参考区间 */
+function soulLensShotCountRange(sec) {
+  const t = Math.max(5, Math.min(600, Math.round(Number(sec) || 0)))
+  if (t < 10) return { min: 1, max: 2 }
+  if (t < 20) return { min: 1, max: Math.ceil(t / 5) }
+  const n = Math.max(1, Math.floor(t / 15))
+  const o = Math.max(n, Math.ceil(t / 5))
+  return { min: n, max: Math.min(o, n * 3) }
+}
+
+/** 单段场次镜数锁定（灵境 ki 非 custom 分支） */
+function soulLensLockedShotCount(sec, shotDivisor) {
+  const d = Math.max(2, Math.round(Number(sec) || 0))
+  const div = shotDivisor || SOUL_LENS_SHOT_DIVISOR.balanced
+  const k = Math.ceil(d / 7)
+  const E = Math.max(k, Math.ceil(d / 4))
+  return Math.max(k, Math.min(E, Math.round(d / div)))
+}
+
+/** 由剧本字符数粗估成片总时长（短剧偏长镜）：秒数 = round(10 + (字数/600)×60)，夹在 10–600s */
+function estimateVideoDurationSecFromCharLen(charLen) {
+  const len = Math.max(0, Math.floor(Number(charLen) || 0))
+  if (len < 1) return null
+  const raw = Math.round(10 + (len / 600) * 60)
+  return Math.min(600, Math.max(10, raw))
+}
+
+/** 当前剧本下的估算：总秒数、镜数中枢、镜数区间、节奏除数 */
+const scriptStoryboardEstimate = computed(() => {
+  const script = (scriptContent.value || '').toString().trim()
+  const len = script.length
+  if (!len) return null
+  const sec = estimateVideoDurationSecFromCharLen(len)
+  if (sec == null) return null
+  const divisor = soulLensShotDivisorForScript(script)
+  const locked = soulLensLockedShotCount(sec, divisor)
+  const range = soulLensShotCountRange(sec)
+  return { sec, locked, range, divisor, len }
+})
+
+const scriptEstimateVideoDurationHint = computed(() => {
+  const e = scriptStoryboardEstimate.value
+  if (!e) return ''
+  return `（约 ${e.sec}s）`
+})
+
+const scriptEstimateVideoDurationTitle = computed(() => {
+  const e = scriptStoryboardEstimate.value
+  if (!e) return ''
+  return `按当前剧本文本约 ${e.len} 字、短剧公式 round(10+(字/600)×60) 粗估总时长约 ${e.sec} 秒；未填输入框时该值会作为约束传给生成接口。仅供参考`
+})
+
+const scriptEstimateStoryboardHint = computed(() => {
+  const e = scriptStoryboardEstimate.value
+  if (!e) return ''
+  if (e.range && e.range.min !== e.range.max) {
+    return `（约 ${e.locked} 镜，参考 ${e.range.min}–${e.range.max}）`
+  }
+  return `（约 ${e.locked} 镜）`
+})
+
+const scriptEstimateStoryboardTitle = computed(() => {
+  const e = scriptStoryboardEstimate.value
+  if (!e) return ''
+  const rhythm = soulLensRhythmKeyFromScript((scriptContent.value || '').toString().trim())
+  return `按估算时长 ${e.sec}s 与节奏「${rhythm}」（除数≈${e.divisor}s/镜）粗估约 ${e.locked} 镜；区间算法同灵境 _i。仅供参考`
+})
+
+function scriptTextTrimmedForEstimate() {
+  return (scriptContent.value || '').toString().trim()
+}
+
+function userFilledStoryboardCount() {
+  const v = storyboardCount.value
+  return v != null && Number.isFinite(Number(v)) && Number(v) >= 1
+}
+
+function userFilledVideoDuration() {
+  const v = videoDuration.value
+  return v != null && Number.isFinite(Number(v)) && Number(v) >= 10
+}
+
+/** 请求后端的视频总时长：仅未手动填时传剧本估算 */
+function getVideoDurationForApi() {
+  if (userFilledVideoDuration()) return Math.round(Number(videoDuration.value))
+  const len = scriptTextTrimmedForEstimate().length
+  if (len < 1) return undefined
+  return estimateVideoDurationSecFromCharLen(len) ?? undefined
+}
+
+/** 请求后端的分镜数量：仅未手动填时按灵境公式与当前采用的总秒数推算 */
+function getStoryboardCountForApi() {
+  if (userFilledStoryboardCount()) return Math.round(Number(storyboardCount.value))
+  const sec = getVideoDurationForApi()
+  if (sec == null || !Number.isFinite(sec)) return undefined
+  const divisor = soulLensShotDivisorForScript(scriptTextTrimmedForEstimate())
+  return Math.min(200, Math.max(1, soulLensLockedShotCount(sec, divisor)))
+}
 
 function getFirstImageFile(dataTransfer) {
   if (!dataTransfer?.files?.length) return null
@@ -3033,6 +3183,7 @@ async function loadDrama() {
     projectAspectRatio.value = (d.metadata && d.metadata.aspect_ratio) ? d.metadata.aspect_ratio : '16:9'
     videoClipDuration.value = (d.metadata && d.metadata.video_clip_duration) ? Number(d.metadata.video_clip_duration) : 5
     storyboardIncludeNarration.value = !!(d.metadata && d.metadata.storyboard_include_narration)
+    storyboardUniversalOmni.value = d.metadata?.storyboard_universal_omni !== false
     const list = d.episodes || []
     // 优先保持当前选中的集（按 id 在最新列表中查找），避免 AI 生成角色等操作后误切到其他集
     const currentId = selectedEpisodeId.value
@@ -3069,6 +3220,22 @@ function setSbCharacterIds(sbId, v) {
   const next = Array.isArray(v) ? v : []
   sbCharacterIds.value = { ...sbCharacterIds.value, [sbId]: next }
   onStoryboardCharacterChange(sbId)
+}
+
+/** 当前分镜尚未勾选的角色（供缩略图旁「+」下拉添加） */
+function charactersAvailableToAddToSb(sbId) {
+  const all = characters.value ?? []
+  const cur = new Set((getSbCharacterIds(sbId) || []).map((x) => Number(x)))
+  return all.filter((c) => c && !cur.has(Number(c.id)))
+}
+
+function onSbAddCharacterCommand(sbId, charId) {
+  const id = Number(charId)
+  if (!Number.isFinite(id)) return
+  const cur = [...(getSbCharacterIds(sbId) || [])]
+  if (cur.some((x) => Number(x) === id)) return
+  cur.push(id)
+  setSbCharacterIds(sbId, cur)
 }
 
 /** 当前分镜已选物品 id 列表 */
@@ -3284,6 +3451,7 @@ async function saveProjectSettings(includeGenerationStyle = false) {
     aspect_ratio: projectAspectRatio.value || '16:9',
     video_clip_duration: videoClipDuration.value || 5,
     storyboard_include_narration: !!storyboardIncludeNarration.value,
+    storyboard_universal_omni: !!storyboardUniversalOmni.value,
   }
   if (includeGenerationStyle) {
     Object.assign(metadata, projectStylePromptMetadata())
@@ -4337,10 +4505,11 @@ async function onGenerateStoryboard() {
     const res = await dramaAPI.generateStoryboard(currentEpisodeId.value, {
       model: undefined,
       style: getSelectedStyle(),
-      storyboard_count: storyboardCount.value || undefined,
-      video_duration: videoDuration.value || undefined,
+      storyboard_count: getStoryboardCountForApi(),
+      video_duration: getVideoDurationForApi(),
       aspect_ratio: projectAspectRatio.value || '16:9',
       include_narration: !!storyboardIncludeNarration.value,
+      universal_omni_storyboard: !!storyboardUniversalOmni.value,
     })
     const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
     if (taskId) {
@@ -4355,7 +4524,7 @@ async function onGenerateStoryboard() {
     await loadDrama()
     // 生成完成后静默补全空缺的摄影参数（只填未填字段，不覆盖 AI 已填的）
     storyboardsAPI.batchInferParams(currentEpisodeId.value, false).catch(() => {})
-    ElMessage.success('分镜生成完成')
+    ElMessage.success(storyboardUniversalOmni.value ? '全能分镜生成完成' : '分镜生成完成')
   } catch (e) {
     // HTTP 错误由 request 拦截器统一展示，此处仅处理拦截器未覆盖的异常
     if (!e.response) ElMessage.error(e.message || '生成失败')
@@ -4944,9 +5113,10 @@ async function runOneClickPipeline(textOnly = false) {
         const res = await dramaAPI.generateStoryboard(episodeId, {
           style,
           aspect_ratio: projectAspectRatio.value || '16:9',
-          storyboard_count: storyboardCount.value || undefined,
-          video_duration: videoDuration.value || undefined,
+          storyboard_count: getStoryboardCountForApi(),
+          video_duration: getVideoDurationForApi(),
           include_narration: !!storyboardIncludeNarration.value,
+          universal_omni_storyboard: !!storyboardUniversalOmni.value,
         })
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
@@ -5413,9 +5583,10 @@ async function runRepairPipeline() {
       try {
         const res = await dramaAPI.generateStoryboard(episodeId, {
           aspect_ratio: projectAspectRatio.value || '16:9',
-          storyboard_count: storyboardCount.value || undefined,
-          video_duration: videoDuration.value || undefined,
+          storyboard_count: getStoryboardCountForApi(),
+          video_duration: getVideoDurationForApi(),
           include_narration: !!storyboardIncludeNarration.value,
+          universal_omni_storyboard: !!storyboardUniversalOmni.value,
         })
         const taskId = res?.task_id ?? (typeof res === 'string' ? res : null)
         if (taskId) {
@@ -6998,6 +7169,30 @@ html.light .sb-panel {
   height: 32px;
   border-radius: 50%;
 }
+.sb-thumb-add-char {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: 1.5px dashed #52525b;
+  background: transparent;
+  color: #a1a1aa;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.sb-thumb-add-char:hover {
+  color: #e4e4e7;
+  border-color: #71717a;
+  background: rgba(63, 63, 70, 0.5);
+}
+html.light .sb-thumb-add-char {
+  border-color: #d4d4d8;
+  color: #71717a;
+}
+html.light .sb-thumb-add-char:hover {
+  color: #18181b;
+  border-color: #a1a1aa;
+  background: #f4f4f5;
+}
 .sb-thumb-prop,
 .sb-thumb-scene {
   width: 36px;
@@ -7582,6 +7777,11 @@ html.light .sb-video-placeholder {
   font-size: 0.78rem;
   color: #52525b;
   white-space: nowrap;
+}
+.sb-config-hint--estimate {
+  white-space: normal;
+  max-width: 220px;
+  line-height: 1.35;
 }
 .sb-config-divider {
   color: #3f3f46;

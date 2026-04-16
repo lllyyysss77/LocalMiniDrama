@@ -452,3 +452,32 @@ html.light .el-radio-button__inner {
 html.light .main {
   padding-top: 28px !important;
 }
+
+/* =====================================================
+   全局 ElMessage：更大、更易读、略长停留（与 main.js message.duration 配合）
+   placement=top 时横向已为居中，此处强化宽度与正文排版
+   ===================================================== */
+.el-message {
+  min-width: min(92vw, 520px) !important;
+  max-width: min(94vw, 720px) !important;
+  padding: 14px 20px !important;
+  box-sizing: border-box !important;
+}
+.el-message .el-message__content {
+  font-size: 15px !important;
+  line-height: 1.55 !important;
+  text-align: center !important;
+  word-break: break-word;
+}
+.el-message .el-message__icon {
+  font-size: 20px !important;
+}
+.el-message .el-message__closeBtn {
+  font-size: 18px !important;
+}
+html.dark .el-message--error {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+html.light .el-message--error {
+  box-shadow: 0 4px 20px rgba(245, 108, 108, 0.18);
+}

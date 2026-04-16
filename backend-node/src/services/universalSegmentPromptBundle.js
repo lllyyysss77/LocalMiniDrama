@@ -2,11 +2,14 @@
  * 全能片段（Omni / Seedance 多图参考）用户消息构建：供「生成」与「润色」共用。
  * @param {import('better-sqlite3').Database} db
  * @param {number} sbId
- * @param {object} reqBody 可选 duration
+ * @param {object} reqBody 可选 duration、force_without_reference_images（为 true 时不校验场景/角色/道具是否已上图，仍构建提示词）
  * @param {{ universalSegmentOverride?: string | undefined }} opts 若传入则覆盖库中的 universal 写入 CURRENT_UNIVERSAL_SEGMENT
  * @returns {{ ok:true, userPrompt:string, durationLabel:string, durationSec:number, sbId:number, episodeId:number, storyboardNumber:number } | { ok:false, code:'not_found'|'bad_request', message:string }}
  */
 function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
+  const bodyIn = reqBody && typeof reqBody === 'object' ? reqBody : {};
+  const forceWithoutReferenceImages = !!bodyIn.force_without_reference_images;
+
   const sb = db.prepare(
     `SELECT id, episode_id, storyboard_number, scene_id, title, description, location, time,
       action, dialogue, narration, result, atmosphere,
@@ -220,11 +223,6 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
     pushSlot('道具', String(pr.name || '道具').trim());
   }
 
-  const imageSlotMapBlock = [
-    'IMAGE_SLOT_MAP（全能模式提交视频时参考图顺序；正文仅可使用下列占位符，与 API 一致）:',
-    ...slots.map((s) => `${s.tag} = ${s.kind}「${s.summary}」`),
-  ].join('\n');
-
   const charSlots = slots.filter((s) => s.kind === '角色');
   const sceneFirst = slots.length > 0 && slots[0].kind === '场景';
   const charBindingBlock =
@@ -239,11 +237,17 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
               : `「${s.summary}」→ ${s.tag}（外貌/动作绑定 ${s.tag} ，示例：${s.tag} 的侧脸）`
           ),
         ].join('\n')
-      : [
-          'CHARACTER_IMAGE_BINDING: 当前无「角色」参考槽位；若出现人物且 @图片1 为场景，勿将人物外貌写在 @图片1。',
-        ].join('\n');
+      : slots.length === 0 && forceWithoutReferenceImages
+        ? [
+            'CHARACTER_IMAGE_BINDING（无图强制模式）:',
+            '- 尚无已解析的 @图片 槽位；ORDERED_CHARACTER_NAMES 仅用于剧情理解，禁止写成 @姓名 指代参考图。',
+            '- 若输出中出现 @图片N，仅表示与将来补图顺序对齐的占位，勿将具体外貌绑定到错误序号。',
+          ].join('\n')
+        : [
+            'CHARACTER_IMAGE_BINDING: 当前无「角色」参考槽位；若出现人物且 @图片1 为场景，勿将人物外貌写在 @图片1。',
+          ].join('\n');
 
-  if (slots.length === 0) {
+  if (slots.length === 0 && !forceWithoutReferenceImages) {
     return {
       ok: false,
       code: 'bad_request',
@@ -251,10 +255,25 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
     };
   }
 
-  const line3Required =
-    slots[0].kind === '场景'
-      ? '环境、光影与陈设定性参考 @图片1。若 @图片1 为宫格或多画面拼图，禁止成片复刻其分格或并列布局，仅提取统一的室内空间与光线语义；须单镜头完整连续画面。'
-      : '本片段以首张参考图 @图片1 作为画面锚点展开。';
+  let imageSlotMapBlock;
+  let line3Required;
+  if (slots.length === 0) {
+    imageSlotMapBlock = [
+      'IMAGE_SLOT_MAP（无图强制模式：尚无已上传场景/角色/道具参考图；视频 API 当前无实际参考图槽位。若正文仍写 @图片N，仅表示与将来补图顺序对齐的占位，出片前须核对）:',
+      '（解析结果：无已绑定图像的槽位 — 优先依据剧本与分镜字段写清运镜、节奏与情绪；可不使用 @图片N，或自 @图片1 起预留占位，勿编造与剧本矛盾的细节。）',
+    ].join('\n');
+    line3Required =
+      '当前尚未上传参考图；以剧本与分镜字段书写整段内的运镜与时间轴；若写 @图片N 仅为后续补图预留占位，勿将具体人脸绑定到尚未确定序号的图片；勿编造与剧本矛盾的情节。';
+  } else {
+    imageSlotMapBlock = [
+      'IMAGE_SLOT_MAP（全能模式提交视频时参考图顺序；正文仅可使用下列占位符，与 API 一致）:',
+      ...slots.map((s) => `${s.tag} = ${s.kind}「${s.summary}」`),
+    ].join('\n');
+    line3Required =
+      slots[0].kind === '场景'
+        ? '环境、光影与陈设定性参考 @图片1。若 @图片1 为宫格或多画面拼图，禁止成片复刻其分格或并列布局，仅提取统一的室内空间与光线语义；须单镜头完整连续画面。'
+        : '本片段以首张参考图 @图片1 作为画面锚点展开。';
+  }
 
   const charCount = charNamesOrdered.length;
   const propCount = propNames.length;
@@ -267,7 +286,7 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
       if (Number.isFinite(v) && v > 0) projectClipSec = Math.min(120, Math.max(1, v));
     } catch (_) {}
   }
-  const body = reqBody || {};
+  const body = bodyIn;
   const bodyDurRaw = body.duration != null && body.duration !== '' ? Number(body.duration) : NaN;
   const sbDurRaw = sb.duration != null ? Number(sb.duration) : NaN;
   const durationSec = Number.isFinite(bodyDurRaw) && bodyDurRaw > 0
@@ -291,10 +310,17 @@ function buildUniversalSegmentUserPromptBundle(db, sbId, reqBody, opts = {}) {
 
   const refContract = [
     'REFERENCE_RULE:',
-    '- 绑定到某张参考图时，只能写 IMAGE_SLOT_MAP 里列出的 @图片N（阿拉伯数字，如 @图片1、@图片2）。',
-    '- 禁止用 @场景、@姓名、@林薇、@道具名 等形式指代参考图；需要指图时一律 @图片N。',
-    '- 若 @图片1 为「场景」：只写环境/光影/陈设；人物外貌与动作按 CHARACTER_IMAGE_BINDING 从 @图片2 起。若首张参考图即角色，则以 MAP 为准。',
-    '- 场景参考若为四宫格/九宫格等拼图：见 SCENE_REFERENCE_LAYOUT；成片须单镜头连续画面，禁止模仿拼图布局。',
+    ...(slots.length === 0
+      ? [
+          '- 当前为无图强制模式：视频 API 尚无参考图；可不写 @图片N，若写则仅为补图前占位，出片前须与实际上传顺序一致。',
+          '- 禁止用 @场景、@姓名、@道具名 等形式指代参考图；将来有图时须一律改为 @图片N（与 MAP 一致）。',
+        ]
+      : [
+          '- 绑定到某张参考图时，只能写 IMAGE_SLOT_MAP 里列出的 @图片N（阿拉伯数字，如 @图片1、@图片2）。',
+          '- 禁止用 @场景、@姓名、@林薇、@道具名 等形式指代参考图；需要指图时一律 @图片N。',
+          '- 若 @图片1 为「场景」：只写环境/光影/陈设；人物外貌与动作按 CHARACTER_IMAGE_BINDING 从 @图片2 起。若首张参考图即角色，则以 MAP 为准。',
+          '- 场景参考若为四宫格/九宫格等拼图：见 SCENE_REFERENCE_LAYOUT；成片须单镜头连续画面，禁止模仿拼图布局。',
+        ]),
     '- 每个 @图片N 与后随的中/英文字之间保留一个半角空格（后处理也会修正，但模型应直接写对）。',
     '- ORDERED_CHARACTER_NAMES 仅供理解剧情，不得当作图占位符。',
     `有图参考槽位数: ${slots.length}；绑定角色数(含无图): ${charCount}；绑定道具数(含无图): ${propCount}`,

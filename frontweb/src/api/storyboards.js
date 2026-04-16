@@ -89,7 +89,7 @@ export const storyboardsAPI = {
   generateUniversalSegmentPrompt(id, body = {}) {
     return request.post(`/storyboards/${id}/universal-segment-prompt`, body)
   },
-  /** 全能模式生成：NDJSON 流式，可选 body.duration */
+  /** 全能模式生成：NDJSON 流式，可选 body.duration、body.force_without_reference_images */
   generateUniversalSegmentPromptStream(id, body, onDelta) {
     return postUniversalSegmentNdjsonStream(
       `/api/v1/storyboards/${id}/universal-segment-prompt-stream`,
@@ -99,7 +99,7 @@ export const storyboardsAPI = {
   },
   /**
    * 流式润色全能片段：NDJSON 行 {type:'delta',text} / {type:'done',universal_segment_text} / {type:'error',message}
-   * body.draft_universal_segment_text 为当前编辑区全文；可选 duration
+   * body.draft_universal_segment_text 为当前编辑区全文；可选 duration、force_without_reference_images
    */
   polishUniversalSegmentPromptStream(id, body, onDelta) {
     return postUniversalSegmentNdjsonStream(

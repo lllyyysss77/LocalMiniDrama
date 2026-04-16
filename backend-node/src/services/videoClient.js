@@ -785,31 +785,107 @@ function videoUrlFromRecord(rec) {
   return rec.video_url || rec.result_url || rec.url || rec.output_url || null;
 }
 
+/** 方舟 / 豆包 Seedance 等：video.transcoded_video.origin.video_url，或 play/download 直链 */
+function videoUrlFromArkVideoNode(video) {
+  if (!video || typeof video !== 'object') return null;
+  const origin =
+    video.transcoded_video && typeof video.transcoded_video === 'object' ? video.transcoded_video.origin : null;
+  if (origin && typeof origin === 'object' && typeof origin.video_url === 'string' && origin.video_url.trim()) {
+    return origin.video_url.trim();
+  }
+  for (const k of ['download_url', 'play_url', 'url', 'video_url']) {
+    const v = video[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+/** 查询结果里 item_list[0] 形态（与中转站 videos 控制器一致） */
+function pickVideoUrlFromItemList(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const item = list[0];
+  if (!item || typeof item !== 'object') return null;
+  const ca = item.common_attr;
+  const fromCommon =
+    ca &&
+    ca.transcoded_video &&
+    typeof ca.transcoded_video === 'object' &&
+    ca.transcoded_video.origin &&
+    typeof ca.transcoded_video.origin.video_url === 'string' &&
+    ca.transcoded_video.origin.video_url.trim()
+      ? ca.transcoded_video.origin.video_url.trim()
+      : null;
+  const fromVideo = videoUrlFromArkVideoNode(item.video);
+  const fromResult =
+    typeof item.result_url === 'string' && item.result_url.trim() ? item.result_url.trim() : null;
+  const flat = videoUrlFromRecord(item);
+  return fromCommon || fromVideo || fromResult || flat || null;
+}
+
+/**
+ * 方舟类「任务查询」里常见：result 本体无 video_url，而在 result.content.video_url
+ */
+function pickVideoUrlFromResultShape(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  let x = videoUrlFromRecord(obj);
+  if (x) return typeof x === 'string' ? x.trim() : x;
+  const inner = obj.content;
+  if (inner && typeof inner === 'object') {
+    x = videoUrlFromRecord(inner);
+    if (x) return typeof x === 'string' ? x.trim() : x;
+    const il = pickVideoUrlFromItemList(inner.item_list);
+    if (il) return il;
+    if (inner.video && typeof inner.video === 'object') {
+      const v = videoUrlFromArkVideoNode(inner.video) || inner.video.url || inner.video.video_url;
+      if (v && typeof v === 'string') return v.trim();
+    }
+  }
+  return null;
+}
+
 /**
  * OpenAI/Veo/Sora 类中转 JSON 中解析直链（含各层 result_url）
  */
 function pickProxyVideoUrl(data) {
   if (!data || typeof data !== 'object') return null;
+  const topList = pickVideoUrlFromItemList(data.item_list);
+  if (topList) return topList;
   if (data.video && typeof data.video === 'object') {
-    const vu = data.video.url || data.video.video_url;
-    if (vu && typeof vu === 'string') return vu;
+    const vu = videoUrlFromArkVideoNode(data.video) || data.video.url || data.video.video_url;
+    if (vu && typeof vu === 'string') return vu.trim();
   }
   let u = videoUrlFromRecord(data);
   if (u) return u;
   const d = data.data;
   if (d && typeof d === 'object' && !Array.isArray(d)) {
+    const nestedList = pickVideoUrlFromItemList(d.item_list);
+    if (nestedList) return nestedList;
     u = videoUrlFromRecord(d);
     if (u) return u;
+    if (d.video && typeof d.video === 'object') {
+      const dv = videoUrlFromArkVideoNode(d.video) || d.video.url || d.video.video_url;
+      if (dv && typeof dv === 'string') return dv.trim();
+    }
+    if (d.result && typeof d.result === 'object') {
+      const dr = pickVideoUrlFromResultShape(d.result);
+      if (dr) return dr;
+    }
   }
   const r = data.result;
   if (r && typeof r === 'object') {
-    u = videoUrlFromRecord(r);
-    if (u) return u;
+    const pr = pickVideoUrlFromResultShape(r);
+    if (pr) return pr;
   }
   const c = data.content;
   if (c && typeof c === 'object') {
+    const cl = pickVideoUrlFromItemList(c.item_list);
+    if (cl) return cl;
     u = videoUrlFromRecord(c);
     if (u) return u;
+    if (c.video && typeof c.video === 'object') {
+      const cv = videoUrlFromArkVideoNode(c.video) || c.video.url || c.video.video_url;
+      if (cv && typeof cv === 'string') return cv.trim();
+    }
   }
   for (const k of ['videos', 'generations', 'works']) {
     const arr = data[k];

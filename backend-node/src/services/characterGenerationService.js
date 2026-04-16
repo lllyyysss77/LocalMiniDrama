@@ -98,6 +98,27 @@ async function processCharacterGeneration(db, cfg, log, taskID, req) {
 
   const dramaId = Number(req.drama_id);
   const now = new Date().toISOString();
+
+  // 再次「从剧本提取角色」时先清空本集已关联角色，避免与旧数据累加；仅软删除不再被任何分集引用的角色行
+  if (req.episode_id) {
+    const episodeId = Number(req.episode_id);
+    const linkedRows = db.prepare('SELECT character_id FROM episode_characters WHERE episode_id = ?').all(episodeId);
+    for (const row of linkedRows) {
+      const cid = Number(row.character_id);
+      const other = db
+        .prepare('SELECT COUNT(*) AS n FROM episode_characters WHERE character_id = ? AND episode_id != ?')
+        .get(cid, episodeId);
+      if (other && other.n === 0) {
+        db.prepare('UPDATE characters SET deleted_at = ? WHERE id = ? AND drama_id = ? AND deleted_at IS NULL').run(
+          now,
+          cid,
+          dramaId
+        );
+      }
+    }
+    db.prepare('DELETE FROM episode_characters WHERE episode_id = ?').run(episodeId);
+  }
+
   const characters = [];
 
   for (const char of result) {

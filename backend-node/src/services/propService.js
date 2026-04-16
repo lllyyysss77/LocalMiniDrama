@@ -89,6 +89,21 @@ function deleteById(db, log, id) {
   return true;
 }
 
+/** 软删除本集「从剧本提取」写入的道具（props.episode_id），避免再次提取时与旧数据累加 */
+function softDeletePropsByEpisodeId(db, log, episodeId) {
+  const now = new Date().toISOString();
+  try {
+    const result = db.prepare(
+      'UPDATE props SET deleted_at = ? WHERE episode_id = ? AND deleted_at IS NULL'
+    ).run(now, Number(episodeId));
+    log.info('Props soft-deleted by episode', { episode_id: episodeId, count: result.changes });
+    return result.changes;
+  } catch (e) {
+    if ((e.message || '').includes('episode_id')) return 0;
+    throw e;
+  }
+}
+
 function associateWithStoryboard(db, log, storyboardId, propIds) {
   db.prepare('DELETE FROM storyboard_props WHERE storyboard_id = ?').run(storyboardId);
   const ins = db.prepare('INSERT OR IGNORE INTO storyboard_props (storyboard_id, prop_id) VALUES (?, ?)');
@@ -196,6 +211,7 @@ module.exports = {
   getById,
   update,
   deleteById,
+  softDeletePropsByEpisodeId,
   associateWithStoryboard,
   generatePropPromptOnly,
   extractPropFromImage,

@@ -68,6 +68,8 @@ async function processPropExtraction(db, log, taskId, episodeId) {
 
   taskService.updateTaskStatus(db, taskId, 'processing', 50, '正在保存道具...');
 
+  propService.softDeletePropsByEpisodeId(db, log, episodeId);
+
   const dramaId = episode.drama_id;
   const createdProps = [];
   for (const p of extractedProps) {

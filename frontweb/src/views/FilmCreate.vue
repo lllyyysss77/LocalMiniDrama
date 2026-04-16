@@ -644,8 +644,8 @@
             <el-button
               type="primary"
               size="large"
-              :loading="storyboardGenerating"
-              :disabled="!currentEpisodeId || storyboardGenerating"
+              :loading="storyboardGenerating || universalOmniPolishRunning"
+              :disabled="!currentEpisodeId || storyboardGenerating || universalOmniPolishRunning"
               @click="onGenerateStoryboard"
             >
               {{ storyboards.length > 0 ? '重新生成分镜' : 'AI 生成分镜' }}
@@ -661,7 +661,7 @@
                 plain
                 size="large"
                 :loading="batchImageRunning"
-                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating"
+                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
                 @click="startBatchImageGeneration"
               >
                 批量生成分镜图
@@ -671,7 +671,7 @@
                 plain
                 size="large"
                 :loading="batchVideoRunning"
-                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating"
+                :disabled="!currentEpisodeId || batchImageRunning || batchVideoRunning || pipelineRunning || storyboardGenerating || universalOmniPolishRunning"
                 @click="startBatchVideoGeneration"
               >
                 批量生成分镜视频
@@ -724,9 +724,14 @@
             <div v-for="(e, i) in batchVideoErrors" :key="i" class="batch-error-line">{{ e }}</div>
           </div>
         </div>
-        <div v-if="storyboardGenerating" class="storyboard-generating-tip">
+        <div v-if="storyboardGenerating || universalOmniPolishRunning" class="storyboard-generating-tip">
           <el-icon class="is-loading"><Loading /></el-icon>
-          <span>正在分析剧本并拆解分镜，请稍候...</span>
+          <span v-if="universalOmniPolishRunning">
+            正在润色全能提示词：第 {{ universalOmniPolishProgress.current }} / {{ universalOmniPolishProgress.total }} 镜
+            <template v-if="universalOmniPolishProgress.label">（{{ universalOmniPolishProgress.label }}）</template>
+            …
+          </span>
+          <span v-else>正在分析剧本并拆解分镜，请稍候...</span>
         </div>
         <div v-if="sbTruncatedWarning && !sbTruncatedDismissed && storyboards.length > 0" class="sb-truncated-warning">
           <el-icon><WarningFilled /></el-icon>
@@ -987,8 +992,12 @@
                     <template #dropdown>
                       <el-dropdown-menu>
                         <el-dropdown-item command="generate">生成全能提示词</el-dropdown-item>
+                        <el-dropdown-item command="generate-force">不查图片强制生成</el-dropdown-item>
                         <el-dropdown-item command="polish" :disabled="!sbUniversalSegmentTrimmed(sb)">
                           润色全能提示词
+                        </el-dropdown-item>
+                        <el-dropdown-item command="polish-force" :disabled="!sbUniversalSegmentTrimmed(sb)">
+                          不查图片强制润色
                         </el-dropdown-item>
                       </el-dropdown-menu>
                     </template>
@@ -1089,6 +1098,7 @@
               <div v-if="getSbVideo(sb.id)" class="sb-video-area">
                 <video
                   v-if="assetVideoUrl(getSbVideo(sb.id))"
+                  :key="sbMainVideoPlayerKey(sb.id)"
                   :src="assetVideoUrl(getSbVideo(sb.id))"
                   controls
                   class="sb-video-player"
@@ -1162,9 +1172,13 @@
           </template>
         </template>
         <!-- 分镜生成中提示条 -->
-        <div v-if="storyboardGenerating" class="sb-generating-tip">
+        <div v-if="storyboardGenerating || universalOmniPolishRunning" class="sb-generating-tip">
           <span class="sb-gen-dot" /><span class="sb-gen-dot" /><span class="sb-gen-dot" />
-          <span class="sb-gen-text">分镜持续生成中，客官稍等片刻…</span>
+          <span v-if="universalOmniPolishRunning" class="sb-gen-text">
+            全能片段润色中 {{ universalOmniPolishProgress.current }}/{{ universalOmniPolishProgress.total }}
+            <template v-if="universalOmniPolishProgress.label"> · {{ universalOmniPolishProgress.label }}</template>
+          </span>
+          <span v-else class="sb-gen-text">分镜持续生成中，客官稍等片刻…</span>
         </div>
         <div v-else-if="storyboards.length === 0" class="empty-tip">请先生成分镜</div>
       </section>
@@ -2146,6 +2160,9 @@ const currentEpisodeVideoUrl = computed(() => {
 })
 
 const storyboardGenerating = ref(false)
+/** 分镜批量生成结束后，按镜序逐个润色全能片段（仅勾选全能模式且各镜为 universal 且有正文时） */
+const universalOmniPolishRunning = ref(false)
+const universalOmniPolishProgress = ref({ current: 0, total: 0, label: '' })
 const sbTruncatedWarning = ref(false)
 const sbTruncatedDismissed = ref(false)
 const videoErrorMsg = ref('')
@@ -2297,7 +2314,7 @@ const navSteps = computed(() => {
   // 分镜脚本
   const sbList = storyboards.value || []
   const sbScriptDone = sbList.length > 0
-  const sbScriptGen = storyboardGenerating.value
+  const sbScriptGen = storyboardGenerating.value || universalOmniPolishRunning.value
   const sbScriptStatus = sbScriptGen ? 'generating' : sbScriptDone ? 'done' : 'pending'
 
   // 分镜图
@@ -2345,6 +2362,10 @@ const allActiveTasks = computed(() => {
   if (propsExtracting.value) tasks.push('提取道具...')
   if (scenesExtracting.value) tasks.push('提取场景...')
   if (storyboardGenerating.value) tasks.push('生成分镜脚本...')
+  if (universalOmniPolishRunning.value) {
+    const p = universalOmniPolishProgress.value
+    tasks.push(`润色全能分镜 ${p.current}/${p.total}${p.label ? ' ' + p.label : ''}`)
+  }
   if (batchImageRunning.value) tasks.push('批量生成分镜图...')
   if (batchVideoRunning.value) tasks.push('批量生成分镜视频...')
   // 单个角色图
@@ -2769,6 +2790,20 @@ function assetVideoUrl(item) {
   if (item.video_url) return imageUrl(item.video_url)
   return ''
 }
+/** 列表项是否具备可播放地址（避免仅有空白 local_path 时外层有卡片、内层无 <video>） */
+function recordHasPlayableVideoUrl(i) {
+  if (!i) return false
+  const u = i.video_url && String(i.video_url).trim()
+  const lp = i.local_path && String(i.local_path).trim()
+  return !!(u || lp)
+}
+/** 主播放器强制随记录/地址重建，避免重新生成后 <video> 仍缓存旧 src */
+function sbMainVideoPlayerKey(sbId) {
+  const v = getSbVideo(sbId)
+  if (!v) return ''
+  const src = assetVideoUrl(v)
+  return `${v.id}:${v.updated_at || ''}:${src.slice(0, 160)}`
+}
 /** 该分镜是否有图（接口拉取的或 composed_image） */
 function hasSbImage(sb) {
   return !!(getSbImage(sb.id) || (sb && (sb.composed_image || sb.image_url)))
@@ -2801,7 +2836,7 @@ function getQuadGridImage(storyboardId) {
 function getSbAllVideos(storyboardId) {
   const list = sbVideos.value[storyboardId]
   if (!Array.isArray(list)) return []
-  return list.filter((i) => i.status === 'completed' && (i.video_url || i.local_path))
+  return list.filter((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i))
 }
 /** 取该分镜当前选中的视频（尊重 sbSelectedVideoId，否则默认第一条） */
 function getSbVideo(storyboardId) {
@@ -2840,7 +2875,7 @@ function getSbVideoError(storyboardId) {
   if (sbVideoErrors.value[storyboardId]) return sbVideoErrors.value[storyboardId]
   const list = sbVideos.value[storyboardId]
   if (!Array.isArray(list) || list.length === 0) return ''
-  const hasCompleted = list.some((i) => i.status === 'completed' && (i.video_url || i.local_path))
+  const hasCompleted = list.some((i) => i.status === 'completed' && recordHasPlayableVideoUrl(i))
   if (hasCompleted) return ''
   const failed = list.filter((i) => i.status === 'failed' && i.error_msg)
   if (failed.length === 0) return ''
@@ -4078,20 +4113,23 @@ function universalSegmentDurationSecForSb(sb) {
 }
 
 function onUniversalSegmentPromptMenu(sb, cmd) {
-  if (cmd === 'generate') onGenerateUniversalSegmentPrompt(sb)
-  else if (cmd === 'polish') onPolishUniversalSegmentPromptStream(sb)
+  if (cmd === 'generate') onGenerateUniversalSegmentPrompt(sb, {})
+  else if (cmd === 'generate-force') onGenerateUniversalSegmentPrompt(sb, { forceWithoutReferenceImages: true })
+  else if (cmd === 'polish') onPolishUniversalSegmentPromptStream(sb, {})
+  else if (cmd === 'polish-force') onPolishUniversalSegmentPromptStream(sb, { forceWithoutReferenceImages: true })
 }
 
 /** 全能模式：根据当前分镜结构化字段流式生成片段描述（NDJSON） */
-async function onGenerateUniversalSegmentPrompt(sb) {
+async function onGenerateUniversalSegmentPrompt(sb, opts = {}) {
   if (!sb?.id || generatingUniversalSegmentIds.has(sb.id)) return
+  const force = !!opts.forceWithoutReferenceImages
   generatingUniversalSegmentIds.add(sb.id)
   let live = ''
   try {
     const durationSec = universalSegmentDurationSecForSb(sb)
     const data = await storyboardsAPI.generateUniversalSegmentPromptStream(
       sb.id,
-      { duration: durationSec },
+      { duration: durationSec, ...(force ? { force_without_reference_images: true } : {}) },
       (delta) => {
         live += delta
         sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: live }
@@ -4108,7 +4146,7 @@ async function onGenerateUniversalSegmentPrompt(sb) {
       const row = list.find((x) => Number(x.id) === Number(sb.id))
       if (row) row.universal_segment_text = text
     }
-    ElMessage.success('已根据分镜生成全能片段提示词')
+    ElMessage.success(force ? '已强制生成全能片段提示词（无图模式）' : '已根据分镜生成全能片段提示词')
   } catch (e) {
     ElMessage.error(e.message || '生成失败，请检查文本模型配置')
   } finally {
@@ -4117,8 +4155,9 @@ async function onGenerateUniversalSegmentPrompt(sb) {
 }
 
 /** 全能模式：结合剧本与邻镜流式润色片段描述（服务端 NDJSON） */
-async function onPolishUniversalSegmentPromptStream(sb) {
+async function onPolishUniversalSegmentPromptStream(sb, opts = {}) {
   if (!sb?.id || generatingUniversalSegmentIds.has(sb.id)) return
+  const force = !!opts.forceWithoutReferenceImages
   const draft = sbUniversalSegmentTrimmed(sb)
   if (!draft) {
     ElMessage.warning('请先填写或生成片段描述后再润色')
@@ -4130,7 +4169,11 @@ async function onPolishUniversalSegmentPromptStream(sb) {
     const durationSec = universalSegmentDurationSecForSb(sb)
     const data = await storyboardsAPI.polishUniversalSegmentPromptStream(
       sb.id,
-      { duration: durationSec, draft_universal_segment_text: draft },
+      {
+        duration: durationSec,
+        draft_universal_segment_text: draft,
+        ...(force ? { force_without_reference_images: true } : {}),
+      },
       (delta) => {
         live += delta
         sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: live }
@@ -4147,12 +4190,86 @@ async function onPolishUniversalSegmentPromptStream(sb) {
       const row = list.find((x) => Number(x.id) === Number(sb.id))
       if (row) row.universal_segment_text = text
     }
-    ElMessage.success('全能片段提示词已润色并保存')
+    ElMessage.success(force ? '全能片段已强制润色并保存（无图模式）' : '全能片段提示词已润色并保存')
   } catch (e) {
     ElMessage.error(e.message || '润色失败，请检查文本模型配置')
   } finally {
     generatingUniversalSegmentIds.delete(sb.id)
   }
+}
+
+/**
+ * 分镜脚本生成完成后：按镜序逐个流式润色全能片段（服务端已落库）。
+ * @param {{ checkPause?: () => Promise<void>, onShotProgress?: (cur:number,total:number,sb:object)=>void, onShotError?: (sb:object,msg:string)=>void }} opts
+ */
+async function polishUniversalSegmentsAfterGeneration(opts = {}) {
+  const checkPause = typeof opts.checkPause === 'function' ? opts.checkPause : async () => {}
+  const onShotProgress = typeof opts.onShotProgress === 'function' ? opts.onShotProgress : null
+  const onShotError = typeof opts.onShotError === 'function' ? opts.onShotError : null
+
+  if (!storyboardUniversalOmni.value) return { polished: 0, skipped: true }
+
+  const rawList = store.currentEpisode?.storyboards || []
+  const list = rawList.slice().sort((a, b) => (Number(a.storyboard_number) || 0) - (Number(b.storyboard_number) || 0))
+  const targets = list.filter((sb) => sb?.id && isSbUniversalMode(sb.id) && sbUniversalSegmentTrimmed(sb))
+
+  if (!targets.length) return { polished: 0, skipped: true }
+
+  universalOmniPolishRunning.value = true
+  universalOmniPolishProgress.value = { current: 0, total: targets.length, label: '' }
+  let polished = 0
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      await checkPause()
+      const sb = targets[i]
+      const cur = i + 1
+      const label = '#' + (sb.storyboard_number ?? cur) + (sb.title ? ' ' + String(sb.title).slice(0, 20) : '')
+      universalOmniPolishProgress.value = { current: cur, total: targets.length, label }
+      if (onShotProgress) onShotProgress(cur, targets.length, sb)
+
+      const draft = sbUniversalSegmentTrimmed(sb)
+      if (!draft) continue
+
+      generatingUniversalSegmentIds.add(sb.id)
+      let live = ''
+      try {
+        const durationSec = universalSegmentDurationSecForSb(sb)
+        const data = await storyboardsAPI.polishUniversalSegmentPromptStream(
+          sb.id,
+          {
+            duration: durationSec,
+            draft_universal_segment_text: draft,
+            force_without_reference_images: true,
+          },
+          (delta) => {
+            live += delta
+            sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: live }
+          }
+        )
+        const text = (data?.universal_segment_text ?? '').toString().trim()
+        if (text) {
+          polished += 1
+          sbUniversalSegmentText.value = { ...sbUniversalSegmentText.value, [sb.id]: text }
+          const storyList = store.currentEpisode?.storyboards
+          if (Array.isArray(storyList)) {
+            const row = storyList.find((x) => Number(x.id) === Number(sb.id))
+            if (row) row.universal_segment_text = text
+          }
+        }
+      } catch (e) {
+        const msg = e?.message || String(e)
+        if (onShotError) onShotError(sb, msg)
+        else ElMessage.warning(`分镜 #${sb.storyboard_number ?? sb.id} 全能润色失败：${msg}`)
+      } finally {
+        generatingUniversalSegmentIds.delete(sb.id)
+      }
+      await pipelineRest()
+    }
+  } finally {
+    universalOmniPolishRunning.value = false
+    universalOmniPolishProgress.value = { current: 0, total: 0, label: '' }
+  }
+  return { polished, skipped: false }
 }
 
 /** P2-3: 生成场景多视角图 */
@@ -4568,7 +4685,15 @@ async function onGenerateStoryboard() {
     await loadDrama()
     // 生成完成后静默补全空缺的摄影参数（只填未填字段，不覆盖 AI 已填的）
     storyboardsAPI.batchInferParams(currentEpisodeId.value, false).catch(() => {})
-    ElMessage.success(storyboardUniversalOmni.value ? '全能分镜生成完成' : '分镜生成完成')
+    const polishRes = await polishUniversalSegmentsAfterGeneration({})
+    const polishedN = polishRes?.polished ?? 0
+    ElMessage.success(
+      storyboardUniversalOmni.value
+        ? polishedN > 0
+          ? `全能分镜生成完成，已自动润色 ${polishedN} 条片段`
+          : '全能分镜生成完成'
+        : '分镜生成完成'
+    )
   } catch (e) {
     // HTTP 错误由 request 拦截器统一展示，此处仅处理拦截器未覆盖的异常
     if (!e.response) ElMessage.error(e.message || '生成失败')
@@ -4706,7 +4831,7 @@ async function startBatchVideoGeneration() {
     // 只处理：有参考图（经典=分镜主图；全能=场景/角色/道具，不含经典主图）且 还没有已完成视频 的分镜
     const todo = boards.filter((sb) => {
       const vidList = sbVideos.value[sb.id] || []
-      if (vidList.some((v) => v.status === 'completed' && (v.video_url || v.local_path))) return false
+      if (vidList.some((v) => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
       if (isSbUniversalMode(sb.id)) {
         if (!sbCanSubmitVideo(sb)) return false
         return collectSbOmniReferenceAbsoluteUrls(sb).length > 0
@@ -5149,6 +5274,7 @@ async function runOneClickPipeline(textOnly = false) {
     await checkPause()
     await loadStoryboardMedia()
     let boards = store.storyboards || []
+    const hadBoardsBeforeStep4 = boards.length > 0
     if (boards.length === 0) {
       setPipelineStep(4, '生成分镜脚本...')
       // 与手动生成一样，每 2 秒刷新一次分镜列表，让已解析的分镜逐步显示
@@ -5190,6 +5316,23 @@ async function runOneClickPipeline(textOnly = false) {
       boards = store.storyboards || []
     } else {
       setPipelineStep(4, `已有 ${boards.length} 个分镜，跳过生成`)
+    }
+
+    const generatedSbThisPipeline = !hadBoardsBeforeStep4
+    if (generatedSbThisPipeline && storyboardUniversalOmni.value) {
+      await checkPause()
+      await polishUniversalSegmentsAfterGeneration({
+        checkPause,
+        onShotProgress: (cur, total, sb) =>
+          setPipelineStep(
+            4,
+            `润色全能分镜(${cur}/${total}) #${sb.storyboard_number ?? cur} ${(sb.title || '').slice(0, 16)}`
+          ),
+        onShotError: (sb, msg) =>
+          addPipelineError('润色全能分镜', `镜#${sb.storyboard_number ?? sb.id}: ${msg}`),
+      })
+      await loadDrama()
+      await loadStoryboardMedia()
     }
 
     if (textOnly) {
@@ -5372,7 +5515,7 @@ async function runOneClickPipeline(textOnly = false) {
       await loadStoryboardMedia()
       const boards2 = (store.storyboards || []).filter((sb) => {
         const vidList = sbVideos.value[sb.id] || []
-        if (vidList.some((v) => v.status === 'completed' && (v.video_url || v.local_path))) return false
+        if (vidList.some((v) => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
         if (isSbUniversalMode(sb.id)) {
           if (!sbCanSubmitVideo(sb)) return false
           return collectSbOmniReferenceAbsoluteUrls(sb).length > 0
@@ -5621,6 +5764,7 @@ async function runRepairPipeline() {
 
     // 3. 分镜：没有则生成分镜；再逐个检查分镜图，没有则生成；再逐个检查分镜视频，没有则生成
     let boards = store.storyboards || []
+    const hadBoardsBeforeRepairSb = boards.length > 0
     if (boards.length === 0) {
       await checkPause()
       pipelineCurrentStep.value = '正在生成分镜...'
@@ -5645,6 +5789,18 @@ async function runRepairPipeline() {
         return
       }
       boards = store.storyboards || []
+    }
+    if (!hadBoardsBeforeRepairSb && storyboardUniversalOmni.value) {
+      await checkPause()
+      await polishUniversalSegmentsAfterGeneration({
+        checkPause,
+        onShotProgress: (cur, total, sb) => {
+          pipelineCurrentStep.value = `润色全能分镜(${cur}/${total}) #${sb.storyboard_number ?? cur} ${(sb.title || '').slice(0, 16)}`
+        },
+        onShotError: (sb, msg) =>
+          addPipelineError('润色全能分镜', `镜#${sb.storyboard_number ?? sb.id}: ${msg}`),
+      })
+      await loadDrama()
     }
     // 先拉取分镜图片/视频列表，再批量生成分镜图（并发）
     await loadStoryboardMedia()
@@ -5677,7 +5833,7 @@ async function runRepairPipeline() {
     await loadStoryboardMedia()
     const boards2 = (store.storyboards || []).filter((sb) => {
       const vidList = sbVideos.value[sb.id] || []
-      if (vidList.some((v) => v.status === 'completed' && (v.video_url || v.local_path))) return false
+      if (vidList.some((v) => v.status === 'completed' && recordHasPlayableVideoUrl(v))) return false
       if (isSbUniversalMode(sb.id)) {
         if (!sbCanSubmitVideo(sb)) return false
         return collectSbOmniReferenceAbsoluteUrls(sb).length > 0

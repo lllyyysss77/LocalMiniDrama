@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const aiConfigService = require('./aiConfigService');
 let sharp; try { sharp = require('sharp'); } catch (_) { sharp = null; }
-const { uploadLocalImageToProxy } = require('./uploadService');
+const { uploadLocalImageToProxy, uploadToImageProxy } = require('./uploadService');
 const {
   signKlingOfficialJwt,
   normalizeKlingCredential,
@@ -1479,6 +1479,96 @@ async function callViduVideoApi(config, log, opts) {
 }
 
 /**
+ * 单张参考图：公网 URL 优先（图床 / 已是图床链），失败再 data URL。Veo3 与 xAI 视频共用（与可灵 Omni 一致）。
+ * @returns {Promise<{ kind: 'url'|'data', value: string }|null>}
+ */
+async function resolveVeo3ImageForApi(rawImgUrl, storage_local_path, log, video_gen_id) {
+  const raw = (rawImgUrl || '').trim();
+  if (!raw) return null;
+  const tag = `videoref_${video_gen_id || '0'}`;
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    if (host.includes('imageproxy.zhongzhuan.chat')) {
+      return { kind: 'url', value: raw };
+    }
+  } catch (_) {
+    /* 非绝对 URL */
+  }
+
+  if (!raw.startsWith('data:') && storage_local_path) {
+    const proxyUrl = await uploadLocalImageToProxy(storage_local_path, raw, log, tag);
+    if (proxyUrl) return { kind: 'url', value: proxyUrl };
+  }
+
+  if (raw.startsWith('data:')) {
+    const m = raw.match(/^data:([\w/+.-]+);base64,(.+)$/is);
+    if (m) {
+      try {
+        const buf = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+        const mt = (m[1] || 'image/jpeg').toLowerCase();
+        const mime = mt.includes('png') ? 'image/png' : mt.includes('webp') ? 'image/webp' : 'image/jpeg';
+        const proxyUrl = await uploadToImageProxy(buf, mime, log, tag);
+        if (proxyUrl) return { kind: 'url', value: proxyUrl };
+        log.warn('[视频参考图] data 图床失败，回退内联 data', { video_gen_id });
+      } catch (e) {
+        log.warn('[视频参考图] data 解析失败', { error: e.message, video_gen_id });
+      }
+    }
+    return { kind: 'data', value: raw };
+  }
+
+  let relAfterStatic = '';
+  if (raw.includes('/static/')) {
+    relAfterStatic = (raw.split('/static/')[1] || '').split(/[?#]/)[0].replace(/^\/+/, '');
+  }
+  if (relAfterStatic && storage_local_path) {
+    try {
+      let safeRel = relAfterStatic;
+      try {
+        safeRel = decodeURIComponent(relAfterStatic);
+      } catch (_) {
+        /* keep */
+      }
+      const localFile = path.join(storage_local_path, safeRel);
+      const resolved = path.resolve(localFile);
+      const baseResolved = path.resolve(storage_local_path);
+      if (resolved.startsWith(baseResolved) && fs.existsSync(localFile)) {
+        const buf = fs.readFileSync(localFile);
+        const ext = path.extname(localFile).toLowerCase();
+        const mime = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }[ext] || 'image/jpeg';
+        const proxyUrl = await uploadToImageProxy(buf, mime, log, tag);
+        if (proxyUrl) return { kind: 'url', value: proxyUrl };
+        log.warn('[视频参考图] 本地图床失败 → base64', { video_gen_id });
+        return { kind: 'data', value: `data:${mime};base64,${buf.toString('base64')}` };
+      }
+    } catch (e) {
+      log.warn('[视频参考图] 读本地文件失败', { error: e.message, video_gen_id });
+    }
+  }
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const dlRes = await fetch(raw);
+      if (dlRes.ok) {
+        const buf = Buffer.from(await dlRes.arrayBuffer());
+        const ct = (dlRes.headers.get('content-type') || '').split(';')[0].trim() || 'image/jpeg';
+        const mime = ct.startsWith('image/') ? ct : 'image/jpeg';
+        const proxyUrl = await uploadToImageProxy(buf, mime, log, tag);
+        if (proxyUrl) return { kind: 'url', value: proxyUrl };
+        log.warn('[视频参考图] 拉取后图床失败 → base64', { video_gen_id });
+        return { kind: 'data', value: `data:${mime};base64,${buf.toString('base64')}` };
+      }
+      log.warn('[视频参考图] fetch 非 2xx', { status: dlRes.status, url_head: raw.slice(0, 96), video_gen_id });
+    } catch (e) {
+      log.warn('[视频参考图] fetch 失败', { error: e.message, url_head: raw.slice(0, 96), video_gen_id });
+    }
+    return { kind: 'url', value: raw };
+  }
+
+  return { kind: 'url', value: raw };
+}
+
+/**
  * Veo3 (api_protocol = 'veo3')
  * body: { model, prompt, enhance_prompt: true, images: [base64 or url] }
  * endpoint default: /v1/video/create
@@ -1499,31 +1589,15 @@ async function callVeo3VideoApi(config, log, opts) {
 
   const rawImgUrl = (image_url || '').trim();
   if (rawImgUrl) {
-    let imageData = null;
-    if (rawImgUrl.startsWith('data:')) {
-      imageData = rawImgUrl;
-    } else if (/localhost|127\.0\.0\.1/i.test(rawImgUrl)) {
-      try {
-        const afterStatic = rawImgUrl.split('/static/')[1];
-        if (afterStatic && storage_local_path) {
-          const localFile = path.join(storage_local_path, afterStatic.replace(/^\//, ''));
-          if (fs.existsSync(localFile)) {
-            const buf = fs.readFileSync(localFile);
-            const ext = path.extname(localFile).toLowerCase();
-            const mime = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' }[ext] || 'image/jpeg';
-            imageData = `data:${mime};base64,${buf.toString('base64')}`;
-            log.info('[Veo3] local image -> base64', { file: localFile, size_kb: Math.round(buf.length / 1024), video_gen_id });
-          } else {
-            log.warn('[Veo3] local image not found', { file: localFile, video_gen_id });
-          }
-        }
-      } catch (e) {
-        log.warn('[Veo3] read local image failed', { error: e.message, video_gen_id });
-      }
-    } else {
-      imageData = rawImgUrl;
+    const resolved = await resolveVeo3ImageForApi(rawImgUrl, storage_local_path, log, video_gen_id);
+    if (resolved && resolved.value) {
+      body.images = [resolved.value];
+      log.info('[视频参考图] Veo3 已解析', {
+        transport: resolved.kind,
+        value_head: String(resolved.value).slice(0, 80),
+        video_gen_id,
+      });
     }
-    if (imageData) body.images = [imageData];
   }
 
   log.info('[Veo3] Video API request', {
@@ -1996,6 +2070,18 @@ function resolveXaiVideoResolution(resolution) {
   return '720p';
 }
 
+/** grok-video-3 等官方示例：size 为 "720P" / "480P"（大写 P） */
+function formatGrokVideo3Size(resolution) {
+  const s = resolveXaiVideoResolution(resolution);
+  if (String(s).includes('480')) return '480P';
+  return '720P';
+}
+
+/** 与官方 / 中转 grok-video-3 示例一致：images[] + size，而非旧版 image.url */
+function isGrokVideoCreateStyleModel(modelName) {
+  return /grok-video/i.test(String(modelName || ''));
+}
+
 function clampXaiDuration(d) {
   const n = Math.round(Number(d));
   if (!Number.isFinite(n) || n < 1) return 8;
@@ -2003,7 +2089,9 @@ function clampXaiDuration(d) {
 }
 
 /**
- * xAI Grok Imagine 官方视频 API：POST /v1/videos/generations，画幅字段为 aspect_ratio（非 ratio）。
+ * xAI 视频：
+ * - grok-video-3 等：与官方一致 body 含 images[]、size（720P），见中转文档示例。
+ * - grok-imagine 旧形态：image.url、resolution、duration、reference_images。
  */
 async function callXaiVideoApi(config, log, opts) {
   const {
@@ -2027,48 +2115,82 @@ async function callXaiVideoApi(config, log, opts) {
   const ratio = normalizeAspectRatioForApi(aspect_ratio) || '16:9';
   const dur = clampXaiDuration(duration != null ? duration : 8);
   const reso = resolveXaiVideoResolution(resolution);
+  const modelName = model || 'grok-imagine-video';
+  const useGrokVideoCreate = isGrokVideoCreateStyleModel(modelName);
 
-  let imageUrlForApi = (image_url || '').trim();
-  const hasImage = !!imageUrlForApi;
-  if (hasImage && imageUrlForApi && /localhost|127\.0\.0\.1/i.test(imageUrlForApi) && storage_local_path) {
-    const baseUrl = (files_base_url || '').replace(/\/$/, '');
-    const afterStatic =
-      imageUrlForApi.split('/static/')[1] ||
-      (baseUrl ? imageUrlForApi.replace(baseUrl + '/', '').replace(baseUrl, '') : null);
-    const relPath = afterStatic ? afterStatic.replace(/^\//, '') : null;
-    if (relPath) {
-      const filePath = path.join(storage_local_path, relPath);
-      try {
-        if (fs.existsSync(filePath)) {
-          const buf = fs.readFileSync(filePath);
-          const ext = path.extname(filePath).toLowerCase();
-          const mime =
-            { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.bmp': 'image/bmp' }[ext] ||
-            'image/jpeg';
-          imageUrlForApi = 'data:' + mime + ';base64,' + buf.toString('base64');
-          log.info('[xAI视频] 本地首帧 → data URL', { video_gen_id, size_kb: Math.round(buf.length / 1024) });
-        }
-      } catch (e) {
-        log.warn('[xAI视频] 读取本地首帧失败', { video_gen_id, error: e.message });
-      }
+  let imageUrlForApi = '';
+  const rawMain = (image_url || '').trim();
+  if (rawMain) {
+    const resolved = await resolveVeo3ImageForApi(rawMain, storage_local_path, log, String(video_gen_id || ''));
+    if (resolved?.value) {
+      imageUrlForApi = resolved.value;
+      log.info('[xAI视频] 参考图已解析', {
+        transport: resolved.kind,
+        value_head: String(resolved.value).slice(0, 88),
+        video_gen_id,
+      });
     }
   }
 
-  const body = {
-    model: model || 'grok-imagine-video',
-    prompt: prompt || '',
-    duration: dur,
-    aspect_ratio: ratio,
-    resolution: reso,
-  };
+  const resolvedRefStrings = [];
+  if (Array.isArray(reference_urls) && reference_urls.length > 0) {
+    for (let i = 0; i < reference_urls.length; i++) {
+      const u = reference_urls[i] && String(reference_urls[i]).trim();
+      if (!u) continue;
+      const r = await resolveVeo3ImageForApi(u, storage_local_path, log, `${video_gen_id || 0}_r${i}`);
+      if (r?.value) resolvedRefStrings.push(r.value);
+    }
+  }
 
-  if (hasImage && imageUrlForApi) {
-    body.image = { url: imageUrlForApi };
-  } else if (Array.isArray(reference_urls) && reference_urls.length > 0) {
-    const refs = reference_urls
-      .map((u) => (u && String(u).trim() ? { url: String(u).trim() } : null))
-      .filter(Boolean);
-    if (refs.length) body.reference_images = refs;
+  let body;
+  let mainTransport = 'none';
+  let logExtra = {};
+
+  if (useGrokVideoCreate) {
+    const images = [];
+    if (imageUrlForApi) images.push(imageUrlForApi);
+    for (const s of resolvedRefStrings) {
+      if (s && !images.includes(s)) images.push(s);
+    }
+    body = {
+      model: modelName,
+      prompt: prompt || '',
+      aspect_ratio: ratio,
+      size: formatGrokVideo3Size(resolution),
+      duration: dur,
+    };
+    if (images.length) body.images = images.slice(0, 10);
+    const first = images[0] || '';
+    mainTransport =
+      first && String(first).startsWith('data:') ? 'data_url' : first ? 'http_url' : 'none';
+    logExtra = {
+      body_shape: 'grok-video',
+      images_count: body.images?.length || 0,
+      size: body.size,
+      image_transport: mainTransport,
+    };
+  } else {
+    const hasImage = !!imageUrlForApi;
+    body = {
+      model: modelName,
+      prompt: prompt || '',
+      duration: dur,
+      aspect_ratio: ratio,
+      resolution: reso,
+    };
+    if (hasImage && imageUrlForApi) {
+      body.image = { url: imageUrlForApi };
+    } else if (resolvedRefStrings.length > 0) {
+      body.reference_images = resolvedRefStrings.map((u) => ({ url: u }));
+    }
+    mainTransport =
+      body.image?.url && String(body.image.url).startsWith('data:') ? 'data_url' : body.image?.url ? 'http_url' : 'none';
+    logExtra = {
+      body_shape: 'grok-imagine',
+      has_image: !!body.image,
+      image_transport: mainTransport,
+      ref_count: body.reference_images?.length || 0,
+    };
   }
 
   log.info('[xAI视频] 提交', {
@@ -2076,10 +2198,9 @@ async function callXaiVideoApi(config, log, opts) {
     url,
     model: body.model,
     aspect_ratio: ratio,
-    duration: dur,
-    resolution: reso,
-    has_image: !!body.image,
-    ref_count: body.reference_images?.length || 0,
+    duration: body.duration != null ? body.duration : dur,
+    resolution: body.resolution != null ? body.resolution : undefined,
+    ...logExtra,
   });
 
   const res = await fetch(url, {

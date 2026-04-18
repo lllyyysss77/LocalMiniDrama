@@ -1003,7 +1003,15 @@
                     </template>
                   </el-dropdown>
                 </div>
+                <UniversalSegmentOmniAtEditor
+                  v-if="!generatingUniversalSegmentIds.has(sb.id)"
+                  v-model="sbUniversalSegmentText[sb.id]"
+                  :slots="getSbUniversalOmniRefSlots(sb)"
+                  class="sb-universal-textarea"
+                  @blur="() => onSaveUniversalSegmentField(sb)"
+                />
                 <el-input
+                  v-else
                   v-model="sbUniversalSegmentText[sb.id]"
                   type="textarea"
                   :rows="10"
@@ -2048,6 +2056,7 @@ import { propLibraryAPI } from '@/api/propLibrary'
 import { generationSettingsAPI } from '@/api/prompts'
 import StylePickerButton from '@/components/StylePickerButton.vue'
 import AIConfigContent from '@/components/AIConfigContent.vue'
+import UniversalSegmentOmniAtEditor from '@/components/UniversalSegmentOmniAtEditor.vue'
 import { generationStyleOptions, getStylePromptEn, getStylePromptZh, stylePromptMetadataForSave, backfillDramaStylePromptMetadataIfNeeded } from '@/constants/styleOptions'
 import { useNavigation } from '@/composables/filmCreate/useNavigation'
 import { useCharacters } from '@/composables/filmCreate/useCharacters'
@@ -4328,6 +4337,43 @@ function buildSbVideoPromptForApi(sb) {
     return vp
   }
   return vp
+}
+
+/** 全能模式：与 collectSbOmniReferenceAbsoluteUrls 同序的参考槽位（用于 @ 选择器缩略图） */
+function getSbUniversalOmniRefSlots(sb) {
+  if (!sb?.id) return []
+  const out = []
+  let idx = 1
+  const scene = getSbSelectedScene(sb.id)
+  if (scene && hasAssetImage(scene)) {
+    out.push({
+      index: idx++,
+      kind: 'scene',
+      name: (scene.name || '场景').toString(),
+      thumbUrl: assetImageUrl(scene),
+    })
+  }
+  for (const c of getSbSelectedCharacters(sb.id)) {
+    if (hasAssetImage(c)) {
+      out.push({
+        index: idx++,
+        kind: 'character',
+        name: (c.name || '角色').toString(),
+        thumbUrl: assetImageUrl(c),
+      })
+    }
+  }
+  for (const p of getSbSelectedProps(sb.id)) {
+    if (hasAssetImage(p)) {
+      out.push({
+        index: idx++,
+        kind: 'prop',
+        name: (p.name || '物品').toString(),
+        thumbUrl: assetImageUrl(p),
+      })
+    }
+  }
+  return out
 }
 
 /** 全能模式：场景/角色/物品 → 绝对 URL 列表（不含经典分镜中间主图；供可灵 Omni / 火山多图参考，最多 10，方舟侧最多取 9 张） */

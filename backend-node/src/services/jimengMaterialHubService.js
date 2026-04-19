@@ -25,6 +25,13 @@ function legacyYamlHubSection(cfg) {
   return cfg?.jimeng_material_hub || cfg?.silvamux_hub || {};
 }
 
+/** 与 routes/aiConfig.js listJimeng2MaterialAssets 一致：存库/环境变量里若含「Bearer 」前缀，hubJson 会再拼 Bearer，需先去重 */
+function normalizeMaterialHubToken(raw) {
+  let s = String(raw || '').trim();
+  if (/^bearer\s+/i.test(s)) s = s.replace(/^bearer\s+/i, '').trim();
+  return s;
+}
+
 /**
  * 解析即梦2角色认证调用上下文（供素材注册 API 使用）
  * @param {object} cfg - 应用 config.yaml
@@ -57,16 +64,14 @@ function buildHubContext(cfg, db) {
     .trim()
     .replace(/\/$/, '');
 
-  const tok = (
+  const tok = normalizeMaterialHubToken(
     process.env.JIMENG2_CHARACTER_AUTH_TOKEN ||
-    token ||
-    process.env.JIMENG_MATERIAL_HUB_TOKEN ||
-    process.env.SILVAMUX_HUB_TOKEN ||
-    process.env.HUB_TOKEN ||
-    ''
-  )
-    .toString()
-    .trim();
+      token ||
+      process.env.JIMENG_MATERIAL_HUB_TOKEN ||
+      process.env.SILVAMUX_HUB_TOKEN ||
+      process.env.HUB_TOKEN ||
+      ''
+  );
 
   return { baseUrl, token: tok, poll_max_ms, poll_interval_ms };
 }

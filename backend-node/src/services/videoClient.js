@@ -2306,6 +2306,33 @@ function normalizeStorageRelativePath(p) {
 }
 
 /**
+ * pathname 片段常为百分号编码（中文目录），DB 里 local_path 多为解码后的明文，需对齐后再做 Map 查找。
+ */
+function decodeUriPathForSd2Match(pathRaw) {
+  const raw = String(pathRaw || '').trim();
+  if (!raw) return '';
+  try {
+    return decodeURIComponent(raw);
+  } catch (_) {
+    try {
+      return raw
+        .split('/')
+        .map((seg) => {
+          if (!seg) return seg;
+          try {
+            return decodeURIComponent(seg);
+          } catch {
+            return seg;
+          }
+        })
+        .join('/');
+    } catch {
+      return raw;
+    }
+  }
+}
+
+/**
  * 从公网/本机静态 URL 抽出与 characters.local_path 一致的相对路径。
  * 约定：pathname 中含 `/static/` 时取其后的片段（忽略 host/port，解决 base_url 与 reference_urls 端口不一致）。
  */
@@ -2320,6 +2347,7 @@ function storageRelativeFromPublicUrl(urlStr) {
     const idx = lower.indexOf(marker);
     if (idx >= 0) p = p.slice(idx + marker.length);
     else p = p.replace(/^\/+/, '');
+    p = decodeUriPathForSd2Match(p);
     return normalizeStorageRelativePath(p);
   } catch (_) {
     return '';

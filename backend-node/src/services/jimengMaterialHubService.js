@@ -36,9 +36,10 @@ function normalizeMaterialHubToken(raw) {
  * 解析即梦2角色认证调用上下文（供素材注册 API 使用）
  * @param {object} cfg - 应用 config.yaml
  * @param {object|null} db - better-sqlite3（可选，用于读 AI 配置表）
- * @returns {{ baseUrl: string, token: string, poll_max_ms?: number, poll_interval_ms?: number }}
+ * @param {object|null} [log] - 可选 logger；传入时打一条不含密钥原文的鉴权诊断
+ * @returns {{ baseUrl: string, token: string, poll_max_ms?: number, poll_interval_ms?: number, hubAuthDiag?: object }}
  */
-function buildHubContext(cfg, db) {
+function buildHubContext(cfg, db, log) {
   const row = loadAiJimeng2AuthRow(db);
   let base_url = (row?.base_url || '').toString().trim();
   let token = (row?.api_key || '').toString().trim();
@@ -64,16 +65,62 @@ function buildHubContext(cfg, db) {
     .trim()
     .replace(/\/$/, '');
 
-  const tok = normalizeMaterialHubToken(
+  const rawTokJoined = (
     process.env.JIMENG2_CHARACTER_AUTH_TOKEN ||
-      token ||
-      process.env.JIMENG_MATERIAL_HUB_TOKEN ||
-      process.env.SILVAMUX_HUB_TOKEN ||
-      process.env.HUB_TOKEN ||
-      ''
-  );
+    token ||
+    process.env.JIMENG_MATERIAL_HUB_TOKEN ||
+    process.env.SILVAMUX_HUB_TOKEN ||
+    process.env.HUB_TOKEN ||
+    ''
+  )
+    .toString()
+    .trim();
 
-  return { baseUrl, token: tok, poll_max_ms, poll_interval_ms };
+  const hadLeadingBearer = /^bearer\s+/i.test(rawTokJoined);
+  const tok = normalizeMaterialHubToken(rawTokJoined);
+
+  const env2 = !!String(process.env.JIMENG2_CHARACTER_AUTH_TOKEN || '').trim();
+  const envMat = !!String(process.env.JIMENG_MATERIAL_HUB_TOKEN || '').trim();
+  const envSilva = !!String(process.env.SILVAMUX_HUB_TOKEN || '').trim();
+  const envHub = !!String(process.env.HUB_TOKEN || '').trim();
+  const dbKeyLen = String(row?.api_key || '').trim().length;
+
+  let winningTokenSource = 'none';
+  if (env2) winningTokenSource = 'env:JIMENG2_CHARACTER_AUTH_TOKEN';
+  else if (String(token || '').trim()) {
+    winningTokenSource = dbKeyLen ? 'db:ai_service_configs(jimeng2_character_auth.api_key)' : 'yaml:jimeng_material_hub|silvamux_hub.token';
+  } else if (envMat) winningTokenSource = 'env:JIMENG_MATERIAL_HUB_TOKEN';
+  else if (envSilva) winningTokenSource = 'env:SILVAMUX_HUB_TOKEN';
+  else if (envHub) winningTokenSource = 'env:HUB_TOKEN';
+
+  const hubAuthDiag = {
+    winning_token_source: winningTokenSource,
+    raw_token_chars_before_normalize: rawTokJoined.length,
+    token_chars_in_bearer_payload: tok.length,
+    raw_had_leading_bearer_prefix: hadLeadingBearer,
+    leading_bearer_prefix_stripped: hadLeadingBearer,
+    env_token_flags: {
+      JIMENG2_CHARACTER_AUTH_TOKEN: env2,
+      JIMENG_MATERIAL_HUB_TOKEN: envMat,
+      SILVAMUX_HUB_TOKEN: envSilva,
+      HUB_TOKEN: envHub,
+    },
+    db_jimeng2_active_row_found: !!row,
+    db_api_key_field_chars: dbKeyLen,
+    request_header_shape: 'Authorization: Bearer <token>',
+    note:
+      '若 raw_had_leading_bearer_prefix 为 true，旧版会发出 Bearer Bearer…；现已规范化。环境变量 JIMENG2_CHARACTER_AUTH_TOKEN 优先于数据库 api_key。',
+  };
+
+  if (log && typeof log.info === 'function') {
+    log.info('[JimengMaterialHub] buildHubContext 鉴权诊断（不含密钥原文）', {
+      hub_gateway: baseUrl,
+      token_present: !!tok,
+      ...hubAuthDiag,
+    });
+  }
+
+  return { baseUrl, token: tok, poll_max_ms, poll_interval_ms, hubAuthDiag };
 }
 
 async function hubJson(path, ctx, { method, body, log } = {}) {
@@ -105,12 +152,14 @@ async function hubJson(path, ctx, { method, body, log } = {}) {
       register_image_url: body.url,
       asset_name: body.name,
       asset_type: body.asset_type,
+      bearer_token_payload_chars: token.length,
     });
   }
   if (log && typeof log.info === 'function' && method === 'GET' && String(path || '').startsWith('/assets')) {
     log.info('[JimengMaterialHub] GET /api/business/v1/assets', {
       hub_gateway: base,
       path_query: String(path).includes('?') ? String(path).split('?')[1]?.slice(0, 120) : '',
+      bearer_token_payload_chars: token.length,
     });
   }
 
@@ -126,14 +175,20 @@ async function hubJson(path, ctx, { method, body, log } = {}) {
     const detail = json?.detail || json?.title || json?.message || text || res.statusText;
     const detailStr = typeof detail === 'string' ? detail : JSON.stringify(detail);
     if (log && typeof log.warn === 'function') {
-      log.warn('[JimengMaterialHub] HTTP 错误', {
+      const baseWarn = {
         path,
         method: method || 'GET',
         httpStatus: res.status,
         hub_gateway: base,
         register_image_url: body && body.url ? body.url : undefined,
         response_preview: detailStr.slice(0, 2000),
-      });
+        bearer_token_payload_chars: token.length,
+      };
+      if (res.status === 401) {
+        baseWarn.hint401 =
+          'invalid token 常见原因：密钥与网关不匹配；机器上 JIMENG2_CHARACTER_AUTH_TOKEN 等环境变量覆盖数据库配置；配置里写了「Bearer xxx」导致旧版双重 Bearer（请看 buildHubContext 日志 raw_had_leading_bearer_prefix）';
+      }
+      log.warn('[JimengMaterialHub] HTTP 错误', baseWarn);
     }
     return { ok: false, status: res.status, error: detailStr };
   }

@@ -683,7 +683,7 @@ function readSeedance2AssetJson(text) {
  */
 async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
   const materialHub = jimengMaterialHubService;
-  const hubCtx = materialHub.buildHubContext(cfg, db);
+  const hubCtx = materialHub.buildHubContext(cfg, db, log);
   if (!hubCtx.token) {
     return {
       ok: false,
@@ -720,6 +720,7 @@ async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
     public_image_via: pub.via,
     storage_base_url: (cfg?.storage?.base_url || '').toString().slice(0, 160),
     hub_gateway: hubCtx.baseUrl,
+    hub_auth_diag: hubCtx.hubAuthDiag || null,
     asset_name: assetName,
     register_url_looks_private_host: registerUrlLooksPrivate,
     hint: registerUrlLooksPrivate && pub.via !== 'direct'
@@ -736,6 +737,7 @@ async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
       http_status: createRes.status,
       error: createRes.error,
       resolved_register_image_url: registerImageUrl,
+      hub_auth_diag: hubCtx.hubAuthDiag || null,
     });
     let errMsg = createRes.error || '素材库创建素材失败';
     if (/DownloadFailed|download media|accessible|拉取|下载/i.test(String(errMsg))) {
@@ -798,7 +800,7 @@ async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
 
 async function refreshCharacterJimengMaterialAsset(db, log, cfg, characterId) {
   const materialHub = jimengMaterialHubService;
-  const hubCtx = materialHub.buildHubContext(cfg, db);
+  const hubCtx = materialHub.buildHubContext(cfg, db, log);
   if (!hubCtx.token) {
     return { ok: false, error: '未配置即梦2角色认证：请在「AI 配置」中填写 Token' };
   }
@@ -810,7 +812,15 @@ async function refreshCharacterJimengMaterialAsset(db, log, cfg, characterId) {
     return { ok: false, error: '暂未取得素材 id，请先完成 SD2 认证' };
   }
   const r = await materialHub.getAsset(hubCtx, assetId, log);
-  if (!r.ok) return { ok: false, error: r.error };
+  if (!r.ok) {
+    log.warn('[SD2认证] refresh getAsset 失败', {
+      character_id: Number(characterId),
+      http_status: r.status,
+      error: r.error,
+      hub_auth_diag: hubCtx.hubAuthDiag || null,
+    });
+    return { ok: false, error: r.error };
+  }
   const settled = r.data;
   const now = new Date().toISOString();
   const nextPayload = {

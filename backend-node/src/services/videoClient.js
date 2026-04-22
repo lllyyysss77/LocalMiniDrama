@@ -360,8 +360,9 @@ async function resolveVolcOmniImageAsync(rawUrl, files_base_url, storage_local_p
 
 /** Seedance 2.x：时长吸附到 4–15 秒；旧版 Seedance 仍用 5/10 */
 function normalizeVolcOmniDuration(modelName, durationNum) {
-  const m = String(modelName || '').toLowerCase();
-  const isV2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(m);
+  const m = String(modelName || '').trim().toLowerCase();
+  // 方舟控制台常用推理接入点为 ep-xxxx，名称里不含 seedance-2，但仍多为 Seedance 2.x，需走 4–15 秒档位
+  const isV2 = /seedance[-_]?2|seedance2|2[-_]0[-_]/.test(m) || /^ep-/.test(m);
   const d = Number(durationNum);
   const safe = Number.isFinite(d) && d > 0 ? d : 5;
   if (isV2) {

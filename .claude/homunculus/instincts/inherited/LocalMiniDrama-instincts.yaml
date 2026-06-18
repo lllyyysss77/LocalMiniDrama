@@ -1,0 +1,310 @@
+# Instincts generated from https://github.com/lllyyysss77/LocalMiniDrama
+# Generated: 2026-05-13T04:36:56.659Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: LocalMiniDrama-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/lllyyysss77/LocalMiniDrama
+---
+
+# LocalMiniDrama Commit Length
+
+## Action
+
+Keep commit messages concise (~17 characters)
+
+## Evidence
+
+- Average commit message length: 17 chars
+- Based on 4 commits
+
+---
+id: LocalMiniDrama-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/lllyyysss77/LocalMiniDrama
+---
+
+# LocalMiniDrama Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: LocalMiniDrama-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/lllyyysss77/LocalMiniDrama
+---
+
+# LocalMiniDrama Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: LocalMiniDrama-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/lllyyysss77/LocalMiniDrama
+---
+
+# LocalMiniDrama Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: LocalMiniDrama-arch-type-based
+trigger: "when adding new code"
+confidence: 0.8
+domain: architecture
+source: repo-analysis
+source_repo: https://github.com/lllyyysss77/LocalMiniDrama
+---
+
+# LocalMiniDrama Arch Type Based
+
+## Action
+
+Place code in the appropriate type folder (components/, services/, utils/, etc.)
+
+## Evidence
+
+- Type-based module organization detected
+- Folders: 
+
+---
+id: LocalMiniDrama-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/lllyyysss77/LocalMiniDrama
+---
+
+# LocalMiniDrama Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: LocalMiniDrama-workflow-synchronize-timeout-settings-backend-and-frontend
+trigger: "when doing synchronize timeout settings backend and frontend"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/lllyyysss77/LocalMiniDrama
+---
+
+# LocalMiniDrama Workflow Synchronize Timeout Settings Backend And Frontend
+
+## Action
+
+Follow the synchronize-timeout-settings-backend-and-frontend workflow:
+1. Update backend configuration files related to timeout (e.g., backend-node/configs/config.yaml, backend-node/src/config/videoGeneration.js).
+2. Modify backend service or route files that use timeout (e.g., backend-node/src/services/videoClient.js, backend-node/src/routes/settings.js, backend-node/src/services/videoService.js).
+3. Update corresponding frontend view files to match backend timeout logic (e.g., frontweb/src/views/FilmCreate.vue, frontweb/src/views/FreeCreate.vue).
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: backend-node/configs/config.yaml, backend-node/src/config/videoGeneration.js, backend-node/src/routes/settings.js
+
+---
+id: localminidrama-instinct-naming-conventions
+trigger: "When creating or renaming files, functions, classes, or constants in the codebase"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Naming Conventions
+
+## Action
+
+Use camelCase for files and functions, PascalCase for classes, and SCREAMING_SNAKE_CASE for constants
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions
+- Consistent naming in backend-node and frontweb source files
+
+---
+id: localminidrama-instinct-import-style
+trigger: "When importing modules in JavaScript files"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Import Style
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+- Relative imports observed in source files
+
+---
+id: localminidrama-instinct-export-style
+trigger: "When exporting functions, classes, or constants from modules"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+- Named exports seen in backend-node/src and frontweb/src
+
+---
+id: localminidrama-instinct-error-handling
+trigger: "When handling potential errors in JavaScript code"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Error Handling
+
+## Action
+
+Wrap error-prone code in try-catch blocks
+
+## Evidence
+
+- Pattern in errorHandling.style
+- try-catch blocks observed in backend-node/src
+
+---
+id: localminidrama-instinct-git-commit-format
+trigger: "When writing a commit message"
+confidence: 0.7
+domain: git
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Git Commit Format
+
+## Action
+
+Use freeform commit messages, optionally including context or mentions (e.g., @username), with an average length of ~17 characters
+
+## Evidence
+
+- Pattern in commits.type and examples
+- Example: '自动启动网页 改localhost 为 127.0.0.1     @欧先生@全力以赴'
+
+---
+id: localminidrama-instinct-testing-location
+trigger: "When adding or updating tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Testing Location
+
+## Action
+
+Place test files in a separate directory from source code
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+- Separate test folder observed
+
+---
+id: localminidrama-instinct-testing-pattern
+trigger: "When organizing test files"
+confidence: 0.7
+domain: testing
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Testing Pattern
+
+## Action
+
+Organize tests by type or feature, mirroring the type-based module organization of the main codebase
+
+## Evidence
+
+- Pattern in architecture.moduleOrganization
+- Type-based organization in source and test files
+
+---
+id: localminidrama-instinct-sync-timeout-settings
+trigger: "When timeout settings are updated in either backend or frontend"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: lllyyysss77/LocalMiniDrama
+---
+
+# Localminidrama Instinct Sync Timeout Settings
+
+## Action
+
+Synchronize timeout configuration across backend-node/configs/config.yaml, backend-node/src/config/videoGeneration.js, backend-node/src/routes/settings.js, backend-node/src/services/videoClient.js, backend-node/src/services/videoService.js, frontweb/src/views/FilmCreate.vue, and frontweb/src/views/FreeCreate.vue
+
+## Evidence
+
+- Workflow: synchronize-timeout-settings-backend-and-frontend
+- Commit sequences updating both backend and frontend timeout settings
+
